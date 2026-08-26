@@ -177,6 +177,12 @@ class TestRedHatAdvisoryScraper(unittest.TestCase):
                 "url": "https://issues.redhat.com/browse/RHEL-154262",
             },
             {
+                # URL-only Jira ref (empty/non-ticket summary)
+                "category": "external",
+                "summary": "Related issue",
+                "url": "https://issues.redhat.com/browse/OCPBUGS-12345",
+            },
+            {
                 "category": "self",
                 "summary": "Canonical URL",
                 "url": "https://security.access.redhat.com/data/csaf/v2/advisories/2026/rhsa-2026_19213.json",
@@ -187,13 +193,36 @@ class TestRedHatAdvisoryScraper(unittest.TestCase):
         self.assertIn("123456", result["red_hat_bugzilla_list"])
         self.assertIn("2450505", result["red_hat_bugzilla_list"])
         self.assertIn("RHEL-154262", result["red_hat_bugzilla_list"])
+        self.assertIn("OCPBUGS-12345", result["red_hat_bugzilla_list"])
         self.assertEqual(
             fix_source_url("RHEL-154262"),
             "https://issues.redhat.com/browse/RHEL-154262",
         )
         self.assertEqual(
+            fix_source_url("ocpbugs-99"),
+            "https://issues.redhat.com/browse/OCPBUGS-99",
+        )
+        self.assertEqual(
             fix_source_url("2450505"),
             "https://bugzilla.redhat.com/show_bug.cgi?id=2450505",
+        )
+        self.assertEqual(fix_source_url("not-a-ticket"), "")
+        self.assertEqual(fix_source_url("CVE-2024-1234"), "")
+
+    def test_ignores_nonnumeric_bugzilla_ids(self):
+        """vulnerability.ids labeled Bugzilla must still be numeric (CodeRabbit)."""
+        self.sample_csaf["vulnerabilities"][0]["ids"] = [
+            {"system_name": "Red Hat Bugzilla ID", "text": "123456"},
+            {"system_name": "Red Hat Bugzilla ID", "text": "CVE-2025-1234"},
+            {"system_name": "Red Hat Bugzilla ID", "text": "https://example.com/1"},
+            {"system_name": "Red Hat Bugzilla ID", "text": "  "},
+        ]
+        result = red_hat_advisory_scraper(self.sample_csaf)
+        self.assertIn("123456", result["red_hat_bugzilla_list"])
+        self.assertNotIn("CVE-2025-1234", result["red_hat_bugzilla_list"])
+        self.assertNotIn("https://example.com/1", result["red_hat_bugzilla_list"])
+        self.assertFalse(
+            any(not bugzilla_id.strip() for bugzilla_id in result["red_hat_bugzilla_list"])
         )
 
     def test_bugfix_advisory(self):
