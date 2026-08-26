@@ -512,10 +512,12 @@ async def clone_advisory(
     for advisory_nvra, advisory_nevra in clean_advisory_nvras.items():
         if advisory_nvra in pkg_nvras:
             continue
-        name = repomd.NVRA_RE.search(advisory_nvra).group(1)
+        match = repomd.NVRA_RE.search(advisory_nvra)
+        if not match:
+            continue
         alias = find_nvra_alias(
             advisory_nvra,
-            pkg_name_map.get(name, []),
+            pkg_name_map.get(match.group(1), []),
             advisory_nevra=advisory_nevra,
             raw_pkg_nvras=pkg_nvras,
         )
@@ -812,13 +814,18 @@ async def process_repomd(
             except ValueError as e:
                 logger.warning(f"Skipping invalid NEVRA '{advisory_pkg.nevra}': {e}")
                 continue
-            name = results["name"]
+            # Use cleaned NVRA name (includes "module." prefix) so modular
+            # packages hit the same pkg_name_map keys as repo indexing.
+            cleaned_match = repomd.NVRA_RE.search(cleaned)
+            lookup_name = (
+                cleaned_match.group(1) if cleaned_match else results["name"]
+            )
             if cleaned not in clean_advisory_nvras:
                 if cleaned not in raw_pkg_nvras:
                     # Prefix (.rocky) or EVR >= when Rocky already ships newer
                     alias = find_nvra_alias(
                         cleaned,
-                        pkg_name_map.get(name, []),
+                        pkg_name_map.get(lookup_name, []),
                         advisory_nevra=advisory_pkg.nevra,
                         raw_pkg_nvras=raw_pkg_nvras,
                     )
@@ -949,9 +956,32 @@ async def block_remaining_rh_advisories(supported_product_id: int) -> None:
                 SupportedProductsRhBlock(
                     **{
                         "supported_products_rh_mirror_id": mirror.id,
-                        "red_hat_advsiory_id": advisory.id,
+                        "red_hat_advisory_id": advisory.id,
                     }
                 ) for advisory in advisories
             ],
             ignore_conflicts=True
         )
+
+
+@activity.defn
+async def clear_rh_blocks_for_product(supported_product_id: int) -> int:
+    """
+    Delete RhBlocks for a product so matcher can retry (EVR≥ rematch).
+
+    RhBlock is an operator rematch throttle, not a public CVE status.
+    """
+    mirrors = await SupportedProductsRhMirror.filter(
+        supported_product_id=supported_product_id,
+    )
+    mirror_ids = [m.id for m in mirrors]
+    if not mirror_ids:
+        return 0
+    deleted = await SupportedProductsRhBlock.filter(
+        supported_products_rh_mirror_id__in=mirror_ids,
+    ).delete()
+    # Tortoise delete returns a tuple (count, details) or count depending on version
+    if isinstance(deleted, tuple):
+        return int(deleted[0])
+    return int(deleted or 0)
+
