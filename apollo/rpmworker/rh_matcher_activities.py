@@ -111,6 +111,25 @@ class NewPackage:
     supported_product_id: int
     product_name: str
 
+
+def stream_product_name(mirror) -> str:
+    """Label scanners should join to the live major-stream repo, not a frozen minor.
+
+    Mirror rows named ``Rocky Linux 9.6 aarch64`` freeze the point release that
+    was current at clone time. Hosts on 9.7 then miss the advisory (distro-tools#71).
+    Collapse ``{major}.{minor}`` in the display name when match_minor_version is
+    set. Names like ``Rocky Linux 10 riscv64`` are left untouched.
+    """
+    name = mirror.name
+    major = mirror.match_major_version
+    minor = mirror.match_minor_version
+    if name and major is not None and minor is not None:
+        needle = f"{major}.{minor}"
+        if needle in name:
+            return name.replace(needle, str(major), 1)
+    return name
+
+
 async def create_or_update_advisory_packages(
     advisory: Advisory,
     packages: list[NewPackage],
@@ -155,19 +174,32 @@ async def create_or_update_advisory_packages(
         logger.info("No new packages to add to advisory %s", advisory.name)
 
     # Fill missing module fields on existing packages (do not overwrite resolved streams)
+    # and refresh product_name so rematch repairs frozen point-release labels.
     existing_by_nevra = {pkg.nevra: pkg for pkg in existing_packages}
+    stale_product_ids = {}
     for pkg in packages:
         existing = existing_by_nevra.get(pkg.nevra)
-        if not existing or existing.module_name:
+        if not existing:
             continue
-        if not pkg.module_name:
-            continue
-        await AdvisoryPackage.filter(id=existing.id).update(
-            module_name=pkg.module_name,
-            module_stream=pkg.module_stream,
-            module_version=pkg.module_version,
-            module_context=pkg.module_context,
+        if existing.product_name != pkg.product_name:
+            stale_product_ids.setdefault(pkg.product_name, []).append(existing.id)
+        if not existing.module_name:
+            if not pkg.module_name:
+                continue
+            await AdvisoryPackage.filter(id=existing.id).update(
+                module_name=pkg.module_name,
+                module_stream=pkg.module_stream,
+                module_version=pkg.module_version,
+                module_context=pkg.module_context,
+            )
+    for product_name, ids in stale_product_ids.items():
+        logger.info(
+            "Updating product_name to %s on %d packages for advisory %s",
+            product_name,
+            len(ids),
+            advisory.name,
         )
+        await AdvisoryPackage.filter(id__in=ids).update(product_name=product_name)
 
     # Remove packages not in the new list if updating
     if update_advisory:
@@ -315,7 +347,7 @@ async def create_or_update_advisory_affected_product(
             {
                 "advisory_id": advisory.id,
                 "variant": product_name,
-                "name": mirror.name,
+                "name": stream_product_name(mirror),
                 "major_version": mirror.match_major_version,
                 "minor_version": mirror.match_minor_version,
                 "arch": mirror.match_arch,
@@ -648,7 +680,7 @@ async def clone_advisory(
                             package_name=package_name,
                             mirror_id=mirror.id,
                             supported_product_id=mirror.supported_product_id,
-                            product_name=mirror.name,
+                            product_name=stream_product_name(mirror),
                         )
                     )
 
