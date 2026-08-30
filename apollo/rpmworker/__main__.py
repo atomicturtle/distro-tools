@@ -8,6 +8,9 @@ import asyncio
 from temporalio.worker import Worker
 import click
 
+from common.info import Info
+Info("apollorpmworker", "apollo2")
+
 from apollo.rpmworker.rh_matcher_workflows import (
     RhMatcherWorkflow,
     RhDefunctWorkflow,
@@ -57,7 +60,6 @@ async def run():
 
 @click.command()
 def main():
-    Info("apollorpmworker", "apollo2")
     Logger().info("Starting apollo-rpmworker")
     asyncio.run(run())
 

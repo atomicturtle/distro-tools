@@ -1,9 +1,12 @@
 import datetime
+import re
 from typing import Optional
 
 from tortoise import connections
 
 from apollo.db import Advisory
+
+_CVE_ID = re.compile(r"^CVE-\d{4}-\d+$", re.IGNORECASE)
 
 
 async def fetch_advisories(
@@ -18,7 +21,13 @@ async def fetch_advisories(
     severity: Optional[str],
     kind: Optional[str],
     fetch_related: bool = False,
+    fetch_packages: bool = True,
 ) -> tuple[int, list[Advisory]]:
+    if cve:
+        cve = cve.strip()
+        if _CVE_ID.match(cve):
+            cve = cve.upper()
+
     a = """
         with vars (search, size, page_offset, product, before, after, cve, synopsis, severity, kind) as (
             values ($1 :: text, $2 :: bigint, $3 :: bigint, $4 :: text, $5 :: timestamp, $6 :: timestamp, $7 :: text, $8 :: text, $9 :: text, $10 :: text)
@@ -38,9 +47,9 @@ async def fetch_advisories(
             count(a.*) over () as total
         from
             advisories a
-        left outer join advisory_affected_products ap on ap.advisory_id = a.id
-        left outer join advisory_cves c on c.advisory_id = a.id
-        left outer join advisory_fixes f on f.advisory_id = a.id
+        -- Do not join packages/cves/fixes here: that Cartesian-explodes
+        -- hundreds of thousands of rows and GROUP BY then wedges list.
+        -- Filters that need related tables use EXISTS below.
         where
             a.published_at is not null
 """
@@ -63,9 +72,14 @@ async def fetch_advisories(
         """
 
     if cve:
-        where_stmt += """
-            and exists (select cve from advisory_cves where advisory_id = a.id and cve ilike '%' || (select cve from vars) || '%')
-        """
+        if _CVE_ID.match(cve.strip()):
+            where_stmt += """
+            and exists (select 1 from advisory_cves where advisory_id = a.id and cve = (select cve from vars))
+            """
+        else:
+            where_stmt += """
+            and exists (select 1 from advisory_cves where advisory_id = a.id and cve ilike '%' || (select cve from vars) || '%')
+            """
 
     if synopsis:
         where_stmt += """
@@ -84,7 +98,8 @@ async def fetch_advisories(
 
     if keyword:
         where_stmt += """
-            and (ap.name like '%' || (select search from vars) || '%' or
+            and (
+            exists (select 1 from advisory_affected_products where advisory_id = a.id and name like '%' || (select search from vars) || '%') or
             a.synopsis ilike '%' || (select search from vars) || '%' or
             a.description ilike '%' || (select search from vars) || '%' or
             exists (select cve from advisory_cves where advisory_id = a.id and cve ilike '%' || (select search from vars) || '%') or
@@ -94,7 +109,6 @@ async def fetch_advisories(
 
     a += where_stmt
     a += """
-        group by a.id
         order by a.published_at desc
         limit (select size from vars) offset (select page_offset from vars)
     """
@@ -121,18 +135,28 @@ async def fetch_advisories(
             count = results[1][0]["total"]
 
     advisories = [Advisory(**x) for x in results[1]]
-    if fetch_related:
-        for advisory in advisories:
-            await advisory.fetch_related(
-                "red_hat_advisory",
-                "packages",
-                "cves",
-                "fixes",
-                "affected_products",
-                "packages",
-                "packages__supported_product",
-                "packages__supported_products_rh_mirror",
+    if fetch_related and advisories:
+        # Advisory(**row) from raw SQL is not a queryset instance;
+        # per-row fetch_related("packages") can seq-scan advisory_packages
+        # (~1M rows) and wedge a worker. Prefetch via filter(id__in=).
+        rels = [
+            "red_hat_advisory",
+            "cves",
+            "fixes",
+            "affected_products",
+        ]
+        if fetch_packages:
+            rels.extend(
+                (
+                    "packages",
+                    "packages__supported_product",
+                    "packages__supported_products_rh_mirror",
+                )
             )
+        ordered_ids = [advisory.id for advisory in advisories]
+        loaded = await Advisory.filter(id__in=ordered_ids).prefetch_related(*rels)
+        by_id = {advisory.id: advisory for advisory in loaded}
+        advisories = [by_id[i] for i in ordered_ids if i in by_id]
     return (
         count,
         advisories,

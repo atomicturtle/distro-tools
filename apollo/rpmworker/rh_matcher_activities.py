@@ -390,12 +390,20 @@ async def get_matching_rh_advisories(
     # First get advisories that matches the mirrored product
     # And also the overrides
     # Also exclude blocked advisories and advisories without packages
-    advisories = await RedHatAdvisory.filter(
-        affected_products__variant=mirror.match_variant,
-        affected_products__major_version=mirror.match_major_version,
-        affected_products__minor_version=mirror.match_minor_version,
-        affected_products__arch=mirror.match_arch,
-    ).order_by("red_hat_issued_at").prefetch_related(
+    #
+    # NULL match_minor_version means "any minor of this major". EL8/9 CSAF
+    # rows store minor as NULL; EL10 stores 0/1/2, so a NULL-equals-NULL
+    # filter would match nothing for Rocky 10 stream mirrors.
+    filters = {
+        "affected_products__variant": mirror.match_variant,
+        "affected_products__major_version": mirror.match_major_version,
+        "affected_products__arch": mirror.match_arch,
+    }
+    if mirror.match_minor_version is not None:
+        filters["affected_products__minor_version"] = mirror.match_minor_version
+    advisories = await RedHatAdvisory.filter(**filters).order_by(
+        "red_hat_issued_at"
+    ).prefetch_related(
         "packages",
         "cves",
         "bugzilla_tickets",

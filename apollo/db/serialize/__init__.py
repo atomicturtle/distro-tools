@@ -43,23 +43,33 @@ AdvisoryPackage_Pydantic = pydantic_model_creator(
     db.AdvisoryPackage,
     name="AdvisoryPackage",
 )
+_ADVISORY_EXCLUDE = (
+    "red_hat_advisory",
+    "packages.supported_product",
+    "packages.supported_product_id",
+    "packages.supported_products_rh_mirror",
+    "packages.supported_products_rh_mirror_id",
+    "cves.advisory",
+    "cves.advisory_id",
+    "fixes.advisory",
+    "fixes.advisory_id",
+    "affected_products.advisory",
+    "affected_products.advisory_id",
+    "affected_products.supported_product",
+    "cve_statuses",
+)
+
 Advisory_Pydantic = pydantic_model_creator(
     db.Advisory,
     name="Advisory",
-    exclude=(
-        "red_hat_advisory",
-        "packages.supported_product",
-        "packages.supported_product_id",
-        "packages.supported_products_rh_mirror",
-        "packages.supported_products_rh_mirror_id",
-        "cves.advisory",
-        "cves.advisory_id",
-        "fixes.advisory",
-        "fixes.advisory_id",
-        "affected_products.advisory",
-        "affected_products.advisory_id",
-        "affected_products.supported_product",
-    ),
+    exclude=_ADVISORY_EXCLUDE,
+)
+
+# List payload: skip packages so cve=/keyword list cannot load ~1M RPMs.
+Advisory_Pydantic_List = pydantic_model_creator(
+    db.Advisory,
+    name="AdvisoryList",
+    exclude=_ADVISORY_EXCLUDE + ("packages",),
 )
 
 
@@ -117,4 +127,8 @@ class Advisory_Pydantic_V2(BaseModel):
 
 
 class Advisory_Pydantic_WithSource(Advisory_Pydantic):
+    source: Optional[Advisory_Pydantic_V2_Source] = None
+
+
+class Advisory_Pydantic_ListWithSource(Advisory_Pydantic_List):
     source: Optional[Advisory_Pydantic_V2_Source] = None

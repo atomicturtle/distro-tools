@@ -11,6 +11,8 @@ from apollo.db import Advisory, RedHatIndexState
 from apollo.db.advisory import fetch_advisories
 from apollo.db.serialize import (
     Advisory_Pydantic,
+    Advisory_Pydantic_List,
+    Advisory_Pydantic_ListWithSource,
     Advisory_Pydantic_V2_Source,
     Advisory_Pydantic_WithSource,
 )
@@ -38,9 +40,16 @@ def _advisory_source(advisory: Advisory) -> Optional[Advisory_Pydantic_V2_Source
     )
 
 
-async def _advisory_with_source(advisory: Advisory) -> Advisory_Pydantic_WithSource:
-    base = await Advisory_Pydantic.from_tortoise_orm(advisory)
-    return Advisory_Pydantic_WithSource(
+async def _advisory_with_source(
+    advisory: Advisory, *, include_packages: bool = True
+):
+    if include_packages:
+        base = await Advisory_Pydantic.from_tortoise_orm(advisory)
+        return Advisory_Pydantic_WithSource(
+            **base.dict(), source=_advisory_source(advisory)
+        )
+    base = await Advisory_Pydantic_List.from_tortoise_orm(advisory)
+    return Advisory_Pydantic_ListWithSource(
         **base.dict(), source=_advisory_source(advisory)
     )
 
@@ -57,7 +66,7 @@ def _parse_list_date(raw: Optional[str], field: str) -> Optional[datetime.dateti
 
 @router.get(
     "/",
-    response_model=Pagination[Advisory_Pydantic_WithSource],
+    response_model=Pagination[Advisory_Pydantic_ListWithSource],
 )
 async def list_advisories(
     params: Params = Depends(),
@@ -88,8 +97,11 @@ async def list_advisories(
         severity,
         kind,
         fetch_related=True,
+        fetch_packages=False,
     )
-    items = [await _advisory_with_source(adv) for adv in page_orm]
+    items = [
+        await _advisory_with_source(adv, include_packages=False) for adv in page_orm
+    ]
     advisories = create_page(items, total, params)
 
     state = await RedHatIndexState.first()
