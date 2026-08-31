@@ -118,6 +118,32 @@ def _is_historical_mirror(mirror) -> bool:
     return " [vault " in name
 
 
+SHIP_PRODUCT_ARCHES = {
+    "x86_64",
+    "aarch64",
+    "ppc64le",
+    "s390x",
+    "riscv64",
+    "i686",
+}
+
+
+def _product_arch_for_package(parsed_arch: str, product_name: str) -> Optional[str]:
+    """Arch yum/updateinfo join on. ``src`` is not a repo arch.
+
+    ``noarch`` RPMs live in arch-specific repos; use the stream label's arch
+    (``Rocky Linux 10 x86_64``) so they still appear in x86_64 updateinfo.
+    """
+    if parsed_arch in SHIP_PRODUCT_ARCHES:
+        return parsed_arch
+    if parsed_arch == "noarch" and product_name:
+        token = product_name.rsplit(" ", 1)[-1]
+        if token in SHIP_PRODUCT_ARCHES:
+            return token
+        return "x86_64"
+    return None
+
+
 def affected_product_rows_from_packages(
     advisory_id: int,
     variant: str,
@@ -127,9 +153,12 @@ def affected_product_rows_from_packages(
 
     Mirror lists include every repo that was walked (vault 9.0, SIG, EL10) even
     when no package from that major landed. SPA ``affectedProducts`` must follow
-    NEVRAs, not the walk.
+    NEVRAs, not the walk. Skip ``src`` — updateinfo filters ``arch=x86_64`` and
+    Postgres unique ``(advisory_id, name)`` plus insert-then-delete would
+    otherwise drop ship-arch rows and leave only ``Rocky Linux 10 src``.
     """
     rows = {}
+    src_fallback = []
     for pkg in packages:
         try:
             parsed = parse_nevra(pkg.nevra)
@@ -139,9 +168,12 @@ def affected_product_rows_from_packages(
         major = dist["major"]
         if major is None:
             continue
-        arch = parsed["arch"]
-        # Label from the NEVRA dist, not pkg.product_name. A leftover EL9 walk
-        # can leave product_name="Rocky Linux 9 …" on an el8 module RPM.
+        product_name = getattr(pkg, "product_name", None) or ""
+        arch = _product_arch_for_package(parsed["arch"], product_name)
+        if arch is None:
+            if parsed["arch"] == "src":
+                src_fallback.append((pkg, major))
+            continue
         name = f"{variant} {major} {arch}"
         key = (variant, name, major, arch)
         if key in rows:
@@ -155,6 +187,22 @@ def affected_product_rows_from_packages(
             "arch": arch,
             "supported_product_id": pkg.supported_product_id,
         }
+    if not rows:
+        for pkg, major in src_fallback:
+            arch = "x86_64"
+            name = f"{variant} {major} {arch}"
+            key = (variant, name, major, arch)
+            if key in rows:
+                continue
+            rows[key] = {
+                "advisory_id": advisory_id,
+                "variant": variant,
+                "name": name,
+                "major_version": major,
+                "minor_version": None,
+                "arch": arch,
+                "supported_product_id": pkg.supported_product_id,
+            }
     return list(rows.values())
 
 
@@ -415,7 +463,7 @@ async def create_or_update_advisory_affected_product(
     logger.info("Creating or updating affected products for advisory %s", advisory.name)
 
     existing_affected_products = await AdvisoryAffectedProduct.filter(advisory_id=advisory.id).all()
-    existing_affected_product_ids = {(ap.variant, ap.name, ap.major_version, ap.minor_version, ap.arch) for ap in existing_affected_products}
+    existing_names = {ap.name for ap in existing_affected_products}
 
     # packages=None: first-clone fallback to the mirror walk. An explicit list
     # (including empty) is the cloned NEVRA set — never re-widen from mirrors.
@@ -439,46 +487,43 @@ async def create_or_update_advisory_affected_product(
                 }
             )
 
-    # Add new affected products
+    # Postgres unique is (advisory_id, name), not tortoise unique_together.
+    # Insert-then-delete with ignore_conflicts drops ship-arch rows when the
+    # new name matches an old row (minor_version None vs 0) and then deletes
+    # the old key — RLSA-2025:10073 kept only ``Rocky Linux 10 src``.
+    if update_advisory:
+        await AdvisoryAffectedProduct.filter(advisory_id=advisory.id).delete()
+        existing_names = set()
+
     new_entries = []
+    seen_names = set()
     for product in new_affected_products:
-        key = (product['variant'], product['name'], product['major_version'], product['minor_version'], product['arch'])
-        if key not in existing_affected_product_ids:
-            new_entries.append(
-                AdvisoryAffectedProduct(
-                    advisory_id=advisory.id,
-                    variant=product['variant'],
-                    name=product['name'],
-                    major_version=product['major_version'],
-                    minor_version=product['minor_version'],
-                    arch=product['arch'],
-                    supported_product_id=product.get('supported_product_id'),
-                )
+        name = product["name"]
+        if name in existing_names or name in seen_names:
+            continue
+        seen_names.add(name)
+        new_entries.append(
+            AdvisoryAffectedProduct(
+                advisory_id=advisory.id,
+                variant=product["variant"],
+                name=name,
+                major_version=product["major_version"],
+                minor_version=product["minor_version"],
+                arch=product["arch"],
+                supported_product_id=product.get("supported_product_id"),
             )
+        )
 
     if new_entries:
-        logger.info("Adding %d new affected products to advisory %s", len(new_entries), advisory.name)
-        await AdvisoryAffectedProduct.bulk_create(new_entries, ignore_conflicts=True)
+        logger.info(
+            "Adding %d new affected products to advisory %s",
+            len(new_entries),
+            advisory.name,
+        )
+        await AdvisoryAffectedProduct.bulk_create(new_entries)
     else:
         logger.info("No new affected products to add to advisory %s", advisory.name)
 
-    # Remove affected products not in the new list
-    if update_advisory:
-        # Build set of new keys for comparison
-        new_keys = {(p['variant'], p['name'], p['major_version'], p['minor_version'], p['arch']) for p in new_affected_products}
-        products_to_remove = existing_affected_product_ids - new_keys
-        if products_to_remove:
-            logger.info("Removing %d affected products from advisory %s", len(products_to_remove), advisory.name)
-            # Remove each affected product by matching all tuple fields
-            for key in products_to_remove:
-                await AdvisoryAffectedProduct.filter(
-                    advisory_id=advisory.id,
-                    variant=key[0],
-                    name=key[1],
-                    major_version=key[2],
-                    minor_version=key[3],
-                    arch=key[4],
-                ).delete()
 
 @activity.defn
 async def get_supported_products_with_rh_mirrors(filter_major_versions: Optional[list[int]] = None) -> list[int]:

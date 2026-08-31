@@ -875,6 +875,47 @@ class TestAffectedProductRowsFromPackages(unittest.TestCase):
         self.assertEqual(rows[0]["major_version"], 8)
         self.assertEqual(rows[0]["name"], "Rocky Linux 8 x86_64")
 
+    def test_src_does_not_create_src_product_when_binaries_exist(self):
+        pkgs = [
+            _new_pkg(
+                "firefox-0:128.12.0-1.el10_0.x86_64.rpm",
+                product_name="Rocky Linux 10 x86_64",
+            ),
+            _new_pkg(
+                "firefox-0:128.12.0-1.el10_0.src.rpm",
+                product_name="Rocky Linux 10 x86_64",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(13, "Rocky Linux", pkgs)
+        arches = sorted({row["arch"] for row in rows})
+        names = sorted({row["name"] for row in rows})
+        self.assertEqual(arches, ["x86_64"])
+        self.assertEqual(names, ["Rocky Linux 10 x86_64"])
+
+    def test_src_only_falls_back_to_x86_64(self):
+        pkgs = [
+            _new_pkg(
+                "firefox-0:128.12.0-1.el10_0.src.rpm",
+                product_name="Rocky Linux 10 x86_64",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(14, "Rocky Linux", pkgs)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["arch"], "x86_64")
+        self.assertEqual(rows[0]["name"], "Rocky Linux 10 x86_64")
+
+    def test_noarch_uses_stream_label_arch(self):
+        pkgs = [
+            _new_pkg(
+                "tzdata-0:2025a-1.el10_0.noarch.rpm",
+                product_name="Rocky Linux 10 aarch64",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(15, "Rocky Linux", pkgs)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["arch"], "aarch64")
+        self.assertEqual(rows[0]["name"], "Rocky Linux 10 aarch64")
+
 
 class TestRhAdvisoryMatchesMajor(unittest.TestCase):
     def test_affected_product_major_wins(self):
