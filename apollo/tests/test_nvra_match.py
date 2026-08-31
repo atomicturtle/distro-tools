@@ -3,7 +3,11 @@
 import unittest
 from xml.etree import ElementTree as ET
 
-from apollo.rpmworker.nvra_match import find_nvra_alias, _is_rebuild_prefix
+from apollo.rpmworker.nvra_match import (
+    find_nvra_alias,
+    pkg_dist_compatible_with_rh,
+    _is_rebuild_prefix,
+)
 
 NS = "http://linux.duke.edu/metadata/common"
 
@@ -82,6 +86,117 @@ class TestFindNvraAlias(unittest.TestCase):
             "openssh-8.7p1-49.x86_64",
             [rocky],
             advisory_nevra="openssh-0:8.7p1-49.el9_7.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertIsNone(alias)
+
+    def test_evr_does_not_cross_point_release(self):
+        """RH el10_0 must not alias a later firefox *version* on el10_2."""
+        head = "firefox-140.10.2-1.x86_64"
+        raw = {head: [_pkg("firefox", "140.10.2", "1.el10_2", "x86_64")]}
+        alias = find_nvra_alias(
+            "firefox-128.12.0-1.x86_64",
+            [head],
+            advisory_nevra="firefox-0:128.12.0-1.el10_0.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertIsNone(alias)
+
+    def test_evr_picks_same_point_release_not_later(self):
+        shipped = "firefox-128.12.0-1.x86_64"
+        head = "firefox-140.10.2-1.x86_64"
+        raw = {
+            shipped: [_pkg("firefox", "128.12.0", "1.el10_0", "x86_64")],
+            head: [_pkg("firefox", "140.10.2", "1.el10_2", "x86_64")],
+        }
+        alias = find_nvra_alias(
+            "firefox-128.12.0-1.x86_64",
+            [head, shipped],
+            advisory_nevra="firefox-0:128.12.0-1.el10_0.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertEqual(alias, shipped)
+
+    def test_unstamped_rocky_minor_still_evr_matches(self):
+        """Rocky ``el9`` (no minor) may still satisfy RH ``el9_2``."""
+        rocky = "dbus-1.12.20-8.x86_64"
+        raw = {rocky: [_pkg("dbus", "1.12.20", "8.el9", "x86_64", epoch="1")]}
+        alias = find_nvra_alias(
+            "dbus-1.12.20-7.x86_64",
+            [rocky],
+            advisory_nevra="dbus-1:1.12.20-7.el9_2.1.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertEqual(alias, rocky)
+
+    def test_evr_aliases_later_rocky_point_release(self):
+        """RH el8_6 openssl 1.1.1k-14 ships on Rocky as el8_10 (production)."""
+        rocky = "openssl-libs-1.1.1k-14.x86_64"
+        raw = {
+            rocky: [_pkg("openssl-libs", "1.1.1k", "14.el8_10", "x86_64", epoch="1")]
+        }
+        alias = find_nvra_alias(
+            "openssl-libs-1.1.1k-14.x86_64",
+            [rocky],
+            advisory_nevra="openssl-libs-1:1.1.1k-14.el8_6.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertEqual(alias, rocky)
+
+    def test_evr_does_not_cross_upstream_version(self):
+        """RH openssl 1.1.1k must not alias EL9 openssl 3.0.1."""
+        el9 = "openssl-libs-3.0.1-43.x86_64"
+        raw = {el9: [_pkg("openssl-libs", "3.0.1", "43.el9_0", "x86_64", epoch="1")]}
+        alias = find_nvra_alias(
+            "openssl-libs-1.1.1k-14.x86_64",
+            [el9],
+            advisory_nevra="openssl-libs-1:1.1.1k-14.el8_10.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertIsNone(alias)
+
+
+class TestPkgDistCompatibleWithRh(unittest.TestCase):
+    def test_el8_same_nvr_does_not_match_el10_rhsa(self):
+        pkg = _pkg("firefox", "128.12.0", "1.el8_10", "x86_64")
+        self.assertFalse(
+            pkg_dist_compatible_with_rh(
+                "firefox-0:128.12.0-1.el10_0.x86_64.rpm", pkg
+            )
+        )
+
+    def test_el8_6_rhsa_matches_el8_10_rebuild(self):
+        pkg = _pkg("openssl-libs", "1.1.1k", "14.el8_10", "x86_64", epoch="1")
+        self.assertTrue(
+            pkg_dist_compatible_with_rh(
+                "openssl-libs-1:1.1.1k-14.el8_6.x86_64.rpm", pkg
+            )
+        )
+
+    def test_el10_0_matches_el10_rhsa(self):
+        pkg = _pkg("firefox", "128.12.0", "1.el10_0", "x86_64")
+        self.assertTrue(
+            pkg_dist_compatible_with_rh(
+                "firefox-0:128.12.0-1.el10_0.x86_64.rpm", pkg
+            )
+        )
+
+    def test_unstamped_el9_matches_el9_2(self):
+        pkg = _pkg("dbus", "1.12.20", "8.el9", "x86_64", epoch="1")
+        self.assertTrue(
+            pkg_dist_compatible_with_rh(
+                "dbus-1:1.12.20-7.el9_2.1.x86_64.rpm", pkg
+            )
+        )
+
+    def test_find_alias_rejects_el8_for_el10_rhsa(self):
+        """Cleaned NVR collision must not alias across majors."""
+        el8 = "firefox-128.12.0-1.x86_64"
+        raw = {el8: [_pkg("firefox", "128.12.0", "1.el8_10", "x86_64")]}
+        alias = find_nvra_alias(
+            el8,
+            [el8],
+            advisory_nevra="firefox-0:128.12.0-1.el10_0.x86_64.rpm",
             raw_pkg_nvras=raw,
         )
         self.assertIsNone(alias)

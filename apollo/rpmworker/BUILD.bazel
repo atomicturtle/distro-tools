@@ -4,6 +4,7 @@ load("//build/macros:pyimage.bzl", "py_binary")
 py_library(
     name = "rpmworker_lib",
     srcs = [
+        "nvra_match.py",
         "repomd.py",
         "rh_matcher_activities.py",
         "rh_matcher_workflows.py",

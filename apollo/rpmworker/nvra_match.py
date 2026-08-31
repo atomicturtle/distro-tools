@@ -2,27 +2,60 @@
 NVRA matching helpers for RH → Rocky advisory cloning.
 
 Matching order:
-1. Exact cleaned NVRA (handled by callers via dict lookup). Exact cleaned
-   equality intentionally skips EVR checks: dist tags are stripped, so
-   raw RH ``.el9_2`` vs Rocky ``.el9`` can differ while still being the
-   same cleaned package identity.
+1. Exact cleaned NVRA (handled by callers via dict lookup) **plus**
+   ``pkg_dist_compatible_with_rh``. Cleaning strips ``.el10_0`` / ``.el8_10``,
+   so the same NVR must not attach an EL8 Rocky RPM to an EL10 RHSA.
+   Point-release tags on the same major may differ: Rocky ships RH
+   ``el8_6`` openssl as ``el8_10`` (RLSA-2024:7848). EVR is not re-checked
+   on this path.
 2. Prefix match (Rocky .rocky.* rebuild suffix on the same NVR), with a
    '.' boundary so release ``80`` does not match ``8``, plus EVR >= when
    package XML is available.
-3. EVR >= : same name+arch, Rocky EVR at least the RH fixed EVR
+3. EVR >= : same name+arch+**version** and dist **major**, Rocky release
+   at least the RH fixed release. A later upstream version (``openssl``
+   1.1.1k → 3.0.1, firefox 128 → 140) is a later RLSA, not this one.
 
-(3) covers cases where Rocky already ships a newer release than the RHSA
-fixed NEVRA (different release string, not a .rocky suffix), which the
-prefix matcher cannot see.
+(3) covers Rocky rebuilds of the same NVR with a newer release string,
+which the prefix matcher cannot see.
 """
 
 from __future__ import annotations
 
 from xml.etree import ElementTree as ET
 
-from apollo.rpm_helpers import evr_gte, label_compare, parse_nevra
+from apollo.rpm_helpers import evr_gte, label_compare, parse_dist_version, parse_nevra
 
 COMMON_NS = "http://linux.duke.edu/metadata/common"
+
+
+def _dist_compatible(rh_release: str, rocky_release: str) -> bool:
+    """Same RHEL major. Point-release tags on that major may differ.
+
+    Rocky rebuilds RH ``el8_6`` openssl as ``el8_10``. Later upstream
+    versions are rejected by the EVR version pin, not by dist minor.
+    Unparseable majors stay compatible so older tagging still clones.
+    """
+    rh = parse_dist_version(rh_release)
+    rocky = parse_dist_version(rocky_release)
+    if rh["major"] is None or rocky["major"] is None:
+        return True
+    return rh["major"] == rocky["major"]
+
+
+def pkg_dist_compatible_with_rh(rh_nevra: str, pkg: ET.Element) -> bool:
+    """True when Rocky package XML dist is compatible with the RH NEVRA.
+
+    Callers must use this on exact cleaned-key hits. Unparseable RH NEVRA
+    or package XML without a release is not a match.
+    """
+    try:
+        adv = parse_nevra(rh_nevra)
+    except ValueError:
+        return False
+    evr = _pkg_evr(pkg)
+    if evr is None:
+        return False
+    return _dist_compatible(adv["release"], evr[2])
 
 
 def _pkg_evr(pkg: ET.Element) -> tuple[str, str, str] | None:
@@ -63,7 +96,7 @@ def find_nvra_alias(
 
     Prefer a rebuild-prefix (.rocky) hit that still satisfies EVR >= when
     package XML is available. Otherwise pick the lowest Rocky EVR that is
-    still >= the RH fixed EVR (same arch).
+    still >= the RH fixed EVR (same **version**, arch, and dist major).
     """
     cleaned_parts = advisory_cleaned.rsplit(".", 1)
     if len(cleaned_parts) != 2:
@@ -86,16 +119,20 @@ def find_nvra_alias(
             continue
         if not _is_rebuild_prefix(pkg_nvr, cleaned_nvr):
             continue
-        # When we can, reject rebuild prefixes that are still older than RH fixed.
+        # When we can, reject rebuild prefixes that are still older than RH
+        # fixed or that jumped to another dist major.
         if adv is not None and raw_pkg_nvras:
             pkgs = raw_pkg_nvras.get(pkg_nvra) or []
             if pkgs:
                 evr = _pkg_evr(pkgs[0])
-                if evr is not None and not evr_gte(
-                    evr[0], evr[1], evr[2],
-                    adv["epoch"], adv["version"], adv["release"],
-                ):
-                    continue
+                if evr is not None:
+                    if not _dist_compatible(adv["release"], evr[2]):
+                        continue
+                    if not evr_gte(
+                        evr[0], evr[1], evr[2],
+                        adv["epoch"], adv["version"], adv["release"],
+                    ):
+                        continue
         return pkg_nvra
 
     if adv is None or not raw_pkg_nvras:
@@ -117,6 +154,10 @@ def find_nvra_alias(
         if evr is None:
             continue
         epoch, ver, rel = evr
+        if ver != adv["version"]:
+            continue
+        if not _dist_compatible(adv["release"], rel):
+            continue
         if evr_gte(epoch, ver, rel, adv["epoch"], adv["version"], adv["release"]):
             candidates.append((epoch, ver, rel, pkg_nvra))
 
