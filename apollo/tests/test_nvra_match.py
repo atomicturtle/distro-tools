@@ -103,6 +103,30 @@ class TestFindNvraAlias(unittest.TestCase):
         )
         self.assertIsNone(alias)
 
+    def test_evr_does_not_cross_kernel_point_release(self):
+        """RH el10_0 kernel 55 must not alias current-stream 211 on el10_2."""
+        head = "kernel-6.12.0-211.16.1.x86_64"
+        raw = {head: [_pkg("kernel", "6.12.0", "211.16.1.el10_2.0.1", "x86_64")]}
+        alias = find_nvra_alias(
+            "kernel-6.12.0-55.18.1.x86_64",
+            [head],
+            advisory_nevra="kernel-0:6.12.0-55.18.1.el10_0.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertIsNone(alias)
+
+    def test_evr_does_not_cross_el9_7_to_el9_8(self):
+        """RH el9_7 kernel 611 must not alias current el9_8 687."""
+        head = "kernel-5.14.0-687.10.1.x86_64"
+        raw = {head: [_pkg("kernel", "5.14.0", "687.10.1.el9_8.0.1", "x86_64")]}
+        alias = find_nvra_alias(
+            "kernel-5.14.0-611.41.1.x86_64",
+            [head],
+            advisory_nevra="kernel-0:5.14.0-611.41.1.el9_7.x86_64.rpm",
+            raw_pkg_nvras=raw,
+        )
+        self.assertIsNone(alias)
+
     def test_evr_picks_same_point_release_not_later(self):
         shipped = "firefox-128.12.0-1.x86_64"
         head = "firefox-140.10.2-1.x86_64"

@@ -17,6 +17,12 @@ Matching order:
 3. EVR >= : same name+arch+**version** and dist **major**, Rocky release
    at least the RH fixed release. A later upstream version (``openssl``
    1.1.1k → 3.0.1, firefox 128 → 140) is a later RLSA, not this one.
+   If both releases carry a point-release tag (``el10_0`` vs ``el10_2``,
+   ``el9_7`` vs ``el9_8``) and the dist-stripped release differs, do not
+   alias: that maps kernel ``55.18.1.el10_0`` onto current ``211.el10_2``.
+   Same stripped NVR with a later Rocky ``el8_10`` tag is the exact-key
+   path (openssl ``el8_6`` → ``el8_10``). Unstamped Rocky ``el9`` may
+   still satisfy RH ``el9_2``.
 
 (3) covers Rocky rebuilds of the same NVR with a newer release string,
 which the prefix matcher cannot see.
@@ -24,11 +30,14 @@ which the prefix matcher cannot see.
 
 from __future__ import annotations
 
+import re
 from xml.etree import ElementTree as ET
 
 from apollo.rpm_helpers import evr_gte, label_compare, parse_dist_version, parse_nevra
 
 COMMON_NS = "http://linux.duke.edu/metadata/common"
+_DIST_TAG_RE = re.compile(r"\.el\d+(?:_\d+|)")
+_MODULE_DIST_RE = re.compile(r"\.module.+$")
 
 
 def _dist_compatible(rh_release: str, rocky_release: str) -> bool:
@@ -43,6 +52,27 @@ def _dist_compatible(rh_release: str, rocky_release: str) -> bool:
     if rh["major"] is None or rocky["major"] is None:
         return True
     return rh["major"] == rocky["major"]
+
+
+def _release_without_dist(release: str) -> str:
+    return _MODULE_DIST_RE.sub("", _DIST_TAG_RE.sub("", release))
+
+
+def _evr_alias_point_release_ok(rh_release: str, rocky_release: str) -> bool:
+    """True when EVR>= may jump from RH's point-release to Rocky's.
+
+    Kernel ``55.18.1.el10_0`` must not alias ``211.16.1.el10_2`` just
+    because both are ``6.12.0`` on EL10. Unstamped Rocky ``el9`` (no
+    minor) may still satisfy RH ``el9_2``. Same stripped release with a
+    later ``el8_10`` tag is allowed here but normally hits the exact key.
+    """
+    rh = parse_dist_version(rh_release)
+    rocky = parse_dist_version(rocky_release)
+    if rh["minor"] is None or rocky["minor"] is None:
+        return True
+    if rh["minor"] == rocky["minor"]:
+        return True
+    return _release_without_dist(rh_release) == _release_without_dist(rocky_release)
 
 
 def pkg_dist_compatible_with_rh(rh_nevra: str, pkg: ET.Element) -> bool:
@@ -208,6 +238,8 @@ def find_nvra_alias(
         if ver != adv["version"]:
             continue
         if not _dist_compatible(adv["release"], rel):
+            continue
+        if not _evr_alias_point_release_ok(adv["release"], rel):
             continue
         if evr_gte(epoch, ver, rel, adv["epoch"], adv["version"], adv["release"]):
             candidates.append((epoch, ver, rel, pkg_nvra))

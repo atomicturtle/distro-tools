@@ -753,6 +753,23 @@ class TestProcessRepomdSkippedUrls(unittest.TestCase):
             )
         self.assertNotIn("RHSA-2025:10073", result)
 
+    def test_kernel_el10_2_alone_does_not_match_el10_0_rhsa(self):
+        """Current kernel 211.el10_2 must not clone RHSA kernel 55.el10_0."""
+        repo_pkgs = [
+            _make_pkg_element("kernel", "6.12.0", "211.16.1.el10_2.0.1", "x86_64"),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2025:9348",
+            ["kernel-0:6.12.0-55.18.1.el10_0.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertNotIn("RHSA-2025:9348", result)
+
     def test_firefox_el8_same_nvr_does_not_match_el10_rhsa(self):
         """Cleaned NVR is identical; dist major must still differ."""
         repo_pkgs = [
