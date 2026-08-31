@@ -9,8 +9,8 @@ from tortoise.transactions import in_transaction
 from apollo.db import SupportedProduct, SupportedProductsRhMirror, SupportedProductsRpmRepomd, SupportedProductsRpmRhOverride, SupportedProductsRhBlock
 from apollo.db import RedHatAdvisory, Advisory, AdvisoryAffectedProduct, AdvisoryCVE, AdvisoryFix, AdvisoryPackage
 from apollo.rpmworker import repomd
-from apollo.rpmworker.nvra_match import find_nvra_alias
-from apollo.rpm_helpers import parse_nevra
+from apollo.rpmworker.nvra_match import find_nvra_alias, pkg_dist_compatible_with_rh
+from apollo.rpm_helpers import parse_dist_version, parse_nevra
 from apollo.rhcsaf import fix_source_url
 
 from common.logger import Logger
@@ -112,6 +112,52 @@ class NewPackage:
     product_name: str
 
 
+def _is_historical_mirror(mirror) -> bool:
+    """Vault/point-release mirrors used for first clone and repair, not daily rematch."""
+    name = getattr(mirror, "name", None) or ""
+    return " [vault " in name
+
+
+def affected_product_rows_from_packages(
+    advisory_id: int,
+    variant: str,
+    packages: list,
+) -> list[dict]:
+    """One affected-product row per (stream name, major, arch) actually cloned.
+
+    Mirror lists include every repo that was walked (vault 9.0, SIG, EL10) even
+    when no package from that major landed. SPA ``affectedProducts`` must follow
+    NEVRAs, not the walk.
+    """
+    rows = {}
+    for pkg in packages:
+        try:
+            parsed = parse_nevra(pkg.nevra)
+        except (ValueError, AttributeError, TypeError):
+            continue
+        dist = parse_dist_version(parsed["release"])
+        major = dist["major"]
+        if major is None:
+            continue
+        arch = parsed["arch"]
+        # Label from the NEVRA dist, not pkg.product_name. A leftover EL9 walk
+        # can leave product_name="Rocky Linux 9 …" on an el8 module RPM.
+        name = f"{variant} {major} {arch}"
+        key = (variant, name, major, arch)
+        if key in rows:
+            continue
+        rows[key] = {
+            "advisory_id": advisory_id,
+            "variant": variant,
+            "name": name,
+            "major_version": major,
+            "minor_version": None,
+            "arch": arch,
+            "supported_product_id": pkg.supported_product_id,
+        }
+    return list(rows.values())
+
+
 def stream_product_name(mirror) -> str:
     """Label scanners should join to the live major-stream repo, not a frozen minor.
 
@@ -119,8 +165,13 @@ def stream_product_name(mirror) -> str:
     was current at clone time. Hosts on 9.7 then miss the advisory (distro-tools#71).
     Collapse ``{major}.{minor}`` in the display name when match_minor_version is
     set. Names like ``Rocky Linux 10 riscv64`` are left untouched.
+
+    Historical mirrors are named ``Rocky Linux 10 x86_64 [vault 10.0]`` so the
+    scanner label stays ``Rocky Linux 10 x86_64``.
     """
     name = mirror.name
+    if name and " [vault " in name:
+        name = name.split(" [vault ", 1)[0]
     major = mirror.match_major_version
     minor = mirror.match_minor_version
     if name and major is not None and minor is not None:
@@ -130,14 +181,29 @@ def stream_product_name(mirror) -> str:
     return name
 
 
+def advisory_clone_published_at(advisory, fallback):
+    """Clone publish time is the RH issued date, not the ingest clock."""
+    issued = getattr(advisory, "red_hat_issued_at", None)
+    if issued is not None:
+        return issued
+    return fallback
+
+
 async def create_or_update_advisory_packages(
     advisory: Advisory,
     packages: list[NewPackage],
     update_advisory: bool = False,
+    replace_packages: bool = False,
 ) -> None:
     """
-    Add advisory packages for the given advisory.
-    If update_advisory is True, remove packages not in the new list.
+    Attach packages to a cloned advisory.
+
+    First clone (no existing rows): insert matched NEVRAs.
+    Daily rematch (update_advisory, not replace_packages): fill null module
+    fields and refresh product_name on NEVRAs already present. Do not add or
+    delete packages — an RLSA is a snapshot of what shipped.
+    Repair (replace_packages): add missing NEVRAs and delete those not in the
+    new match set (vault + current lowest-EVR rematch).
     """
     logger = Logger()
     logger.info("Creating or updating advisory packages for %s", advisory.name)
@@ -145,33 +211,41 @@ async def create_or_update_advisory_packages(
     existing_packages = await AdvisoryPackage.filter(advisory_id=advisory.id).all()
     existing_nevras = {pkg.nevra for pkg in existing_packages}
     new_nevras = {pkg.nevra for pkg in packages}
+    mutate_packages = (not existing_packages) or replace_packages
 
     # Add new packages
     new_packages = []
-    for pkg in packages:
-        if pkg.nevra not in existing_nevras:
-            new_packages.append(
-                AdvisoryPackage(
-                    advisory_id=advisory.id,
-                    nevra=pkg.nevra,
-                    checksum=pkg.checksum,
-                    checksum_type=pkg.checksum_type,
-                    module_context=pkg.module_context,
-                    module_name=pkg.module_name,
-                    module_stream=pkg.module_stream,
-                    module_version=pkg.module_version,
-                    repo_name=pkg.repo_name,
-                    package_name=pkg.package_name,
-                    supported_products_rh_mirror_id=pkg.mirror_id,
-                    supported_product_id=pkg.supported_product_id,
-                    product_name=pkg.product_name,
+    if mutate_packages:
+        for pkg in packages:
+            if pkg.nevra not in existing_nevras:
+                new_packages.append(
+                    AdvisoryPackage(
+                        advisory_id=advisory.id,
+                        nevra=pkg.nevra,
+                        checksum=pkg.checksum,
+                        checksum_type=pkg.checksum_type,
+                        module_context=pkg.module_context,
+                        module_name=pkg.module_name,
+                        module_stream=pkg.module_stream,
+                        module_version=pkg.module_version,
+                        repo_name=pkg.repo_name,
+                        package_name=pkg.package_name,
+                        supported_products_rh_mirror_id=pkg.mirror_id,
+                        supported_product_id=pkg.supported_product_id,
+                        product_name=pkg.product_name,
+                    )
                 )
-            )
     if new_packages:
         logger.info("Adding %d new packages to advisory %s", len(new_packages), advisory.name)
         await AdvisoryPackage.bulk_create(new_packages, ignore_conflicts=True)
-    else:
+    elif mutate_packages:
         logger.info("No new packages to add to advisory %s", advisory.name)
+    else:
+        logger.info(
+            "Leaving %d existing packages on %s (snapshot rematch)",
+            len(existing_packages),
+            advisory.name,
+        )
 
     # Fill missing module fields on existing packages (do not overwrite resolved streams)
     # and refresh product_name so rematch repairs frozen point-release labels.
@@ -201,8 +275,8 @@ async def create_or_update_advisory_packages(
         )
         await AdvisoryPackage.filter(id__in=ids).update(product_name=product_name)
 
-    # Remove packages not in the new list if updating
-    if update_advisory:
+    # Remove packages not in the new list only on explicit repair.
+    if replace_packages:
         nevras_to_remove = existing_nevras - new_nevras
         if nevras_to_remove:
             logger.info("Removing %d packages from advisory %s", len(nevras_to_remove), advisory.name)
@@ -329,10 +403,13 @@ async def create_or_update_advisory_affected_product(
     product_name: str,
     mirrors: list[SupportedProductsRhMirror],
     update_advisory: bool = False,
+    packages: Optional[list] = None,
     ) -> None:
     """
     Add affected products for the given advisory.
-    Remove affected products currently associated with advisory if they don't exist in the list passed in.
+    Prefer cloned package NEVRAs. Fall back to the mirror list only when
+    ``packages`` is None (no cloned set supplied). On update, drop products
+    no longer represented.
     """
     logger = Logger()
     logger.info("Creating or updating affected products for advisory %s", advisory.name)
@@ -340,20 +417,27 @@ async def create_or_update_advisory_affected_product(
     existing_affected_products = await AdvisoryAffectedProduct.filter(advisory_id=advisory.id).all()
     existing_affected_product_ids = {(ap.variant, ap.name, ap.major_version, ap.minor_version, ap.arch) for ap in existing_affected_products}
 
-    new_affected_products = list()
-
-    for mirror in mirrors:
-        new_affected_products.append(
-            {
-                "advisory_id": advisory.id,
-                "variant": product_name,
-                "name": stream_product_name(mirror),
-                "major_version": mirror.match_major_version,
-                "minor_version": mirror.match_minor_version,
-                "arch": mirror.match_arch,
-                "supported_product_id": mirror.supported_product_id,
-            }
+    # packages=None: first-clone fallback to the mirror walk. An explicit list
+    # (including empty) is the cloned NEVRA set — never re-widen from mirrors.
+    if packages is None:
+        new_affected_products = []
+    else:
+        new_affected_products = affected_product_rows_from_packages(
+            advisory.id, product_name, packages
         )
+    if not new_affected_products and packages is None:
+        for mirror in mirrors:
+            new_affected_products.append(
+                {
+                    "advisory_id": advisory.id,
+                    "variant": product_name,
+                    "name": stream_product_name(mirror),
+                    "major_version": mirror.match_major_version,
+                    "minor_version": mirror.match_minor_version,
+                    "arch": mirror.match_arch,
+                    "supported_product_id": mirror.supported_product_id,
+                }
+            )
 
     # Add new affected products
     new_entries = []
@@ -414,6 +498,36 @@ async def get_supported_products_with_rh_mirrors(filter_major_versions: Optional
             ret.append(rh_mirror.supported_product_id)
 
     return ret
+
+
+def rh_advisory_matches_major(advisory: RedHatAdvisory, major: int) -> bool:
+    """True when this RHSA/RHBA/RHEA belongs on a Rocky mirror of ``major``.
+
+    Prefer ``affected_products``. If none are loaded, fall back to dist tags
+    on the RH packages so rematch of a named set does not send an EL10
+    advisory into EL8/EL9 indexes (cleaned NVR would otherwise collide).
+    """
+    products = getattr(advisory, "affected_products", None) or []
+    saw_product = False
+    for product in products:
+        try:
+            product_major = int(product.major_version)
+        except (TypeError, ValueError, AttributeError):
+            continue
+        saw_product = True
+        if product_major == major:
+            return True
+    if saw_product:
+        return False
+    for pkg in getattr(advisory, "packages", None) or []:
+        try:
+            parsed = parse_nevra(pkg.nevra)
+        except (ValueError, AttributeError, TypeError):
+            continue
+        dist = parse_dist_version(parsed["release"])
+        if dist["major"] == major:
+            return True
+    return False
 
 
 async def get_matching_rh_advisories(
@@ -485,6 +599,7 @@ async def clone_advisory(
     all_pkgs: list[ET.ElementTree],
     module_pkgs: dict,
     published_at: datetime.datetime,
+    replace_packages: bool = False,
 ):
     logger = Logger()
     logger.info("Cloning advisory %s to %s", advisory.name, product.name)
@@ -547,10 +662,16 @@ async def clone_advisory(
                 pkg_name_map[name] = []
             pkg_name_map[name].append(cleaned)
 
-    # Alias advisory NVRA → repo NVRA via .rocky prefix or EVR >=
+    # Alias advisory NVRA → repo NVRA via .rocky prefix or EVR >=.
+    # A cleaned-key hit still needs a dist-compatible package; otherwise
+    # firefox-128.12.0-1.el8_10 would steal an el10_0 RHSA.
     nvra_alias = {}
     for advisory_nvra, advisory_nevra in clean_advisory_nvras.items():
-        if advisory_nvra in pkg_nvras:
+        exact_pkgs = pkg_nvras.get(advisory_nvra, [])
+        if any(
+            pkg_dist_compatible_with_rh(advisory_nevra, pkg)
+            for pkg in exact_pkgs
+        ):
             continue
         match = repomd.NVRA_RE.search(advisory_nvra)
         if not match:
@@ -593,7 +714,7 @@ async def clone_advisory(
                 kind=advisory.kind,
                 severity=advisory.severity,
                 red_hat_advisory_id=advisory.id,
-                published_at=published_at,
+                published_at=advisory_clone_published_at(advisory, published_at),
                 topic=advisory.topic,
             )
         else:
@@ -603,9 +724,13 @@ async def clone_advisory(
         # Clone packages
         new_pkgs = []
         rh_modules_by_cleaned = _rh_modules_by_cleaned_nevra(advisory)
-        for cleaned_rh_nvra, _ in clean_advisory_nvras.items():
+        for cleaned_rh_nvra, rh_nevra in clean_advisory_nvras.items():
             advisory_nvra = cleaned_rh_nvra
-            if advisory_nvra not in pkg_nvras:
+            exact_pkgs = pkg_nvras.get(advisory_nvra, [])
+            if not any(
+                pkg_dist_compatible_with_rh(rh_nevra, pkg)
+                for pkg in exact_pkgs
+            ):
                 if advisory_nvra in nvra_alias:
                     advisory_nvra = nvra_alias[advisory_nvra]
                 else:
@@ -613,6 +738,8 @@ async def clone_advisory(
 
             pkgs_to_process = pkg_nvras[advisory_nvra]
             for pkg in pkgs_to_process:
+                if not pkg_dist_compatible_with_rh(rh_nevra, pkg):
+                    continue
                 pkg_name = pkg.find(
                     "{http://linux.duke.edu/metadata/common}name"
                 ).text
@@ -685,12 +812,17 @@ async def clone_advisory(
                     )
 
         if not new_pkgs:
+            if existing_advisory:
+                logger.info(
+                    "No packages in current index for %s; leaving existing clone",
+                    advisory.name,
+                )
+                return
             logger.info(
                 "Blocking advisory %s, no packages",
                 advisory.name,
             )
-            if not existing_advisory:
-                await new_advisory.delete()
+            await new_advisory.delete()
             await SupportedProductsRhBlock.bulk_create(
                 [
                     SupportedProductsRhBlock(
@@ -704,7 +836,12 @@ async def clone_advisory(
             )
             return
 
-        await create_or_update_advisory_packages(new_advisory, new_pkgs, update_advisory)
+        await create_or_update_advisory_packages(
+            new_advisory,
+            new_pkgs,
+            update_advisory,
+            replace_packages=replace_packages,
+        )
 
         # Clone CVEs
         if advisory.cves:
@@ -723,17 +860,21 @@ async def clone_advisory(
             new_advisory,
             product.name,
             mirrors,
-            update_advisory
+            update_advisory,
+            packages=new_pkgs,
         )
 
         # Construct topic
         package_names = list({p.package_name for p in new_pkgs})
-        affected_products = list(
-            {
-                f"{product.name} {mirror.match_major_version}"
-                for mirror in mirrors
-            }
-        )
+        affected_majors = set()
+        for pkg in new_pkgs:
+            try:
+                major = parse_dist_version(parse_nevra(pkg.nevra)["release"])["major"]
+            except (ValueError, TypeError, KeyError):
+                continue
+            if major is not None:
+                affected_majors.add(major)
+        affected_products = [f"{product.name} {major}" for major in sorted(affected_majors)]
         topic = f"""An update is available for {', '.join(package_names)}.
 This update affects {', '.join(affected_products)}.
 A Common Vulnerability Scoring System (CVSS) base score, which gives a detailed severity rating, is available for each vulnerability from the CVE list"""
@@ -773,22 +914,34 @@ async def process_repomd(
     ]
     module_packages = {}
     for url in urls_to_fetch:
+        if not url:
+            continue
         logger.info("Fetching %s", url)
-        repomd_xml = await repomd.download_xml(url)
-        primary_xml = await repomd.get_data_from_repomd(
-            url, "primary", repomd_xml
-        )
+        try:
+            repomd_xml = await repomd.download_xml(url)
+            primary_xml = await repomd.get_data_from_repomd(
+                url, "primary", repomd_xml
+            )
+        except Exception as exc:
+            logger.warning("Skipping %s: %s", url, exc)
+            continue
+        if primary_xml is None:
+            continue
         pkgs = primary_xml.findall(
             "{http://linux.duke.edu/metadata/common}package"
         )
         all_pkgs.extend(pkgs)
 
-        module_yaml_data = await repomd.get_data_from_repomd(
-            url,
-            "modules",
-            repomd_xml,
-            is_yaml=True,
-        )
+        try:
+            module_yaml_data = await repomd.get_data_from_repomd(
+                url,
+                "modules",
+                repomd_xml,
+                is_yaml=True,
+            )
+        except Exception as exc:
+            logger.warning("Skipping modules.yaml for %s: %s", url, exc)
+            module_yaml_data = None
         if module_yaml_data:
             logger.info("Found modules.yaml")
             for module_data in module_yaml_data:
@@ -833,16 +986,13 @@ async def process_repomd(
         if cleaned not in pkg_name_map[name]:
             pkg_name_map[name].append(cleaned)
 
-    nvra_alias = {}
-    check_pkgs = set()
-
-
     # Now check against advisories, and see if we're matching any
     # If we match, that means we can start creating the supporting
     # mirror advisories
     for advisory in advisories:
         logger.debug(f"Processing advisory: {advisory.name} inside of `process_repomd` for {mirror.name}")
         clean_advisory_nvras = {}
+        nvra_alias = {}
         # Loop through each package in the advisory and check if we
         # have a match from the rocky repos
         for advisory_pkg in advisory.packages:
@@ -861,7 +1011,11 @@ async def process_repomd(
                 cleaned_match.group(1) if cleaned_match else results["name"]
             )
             if cleaned not in clean_advisory_nvras:
-                if cleaned not in raw_pkg_nvras:
+                exact_pkgs = raw_pkg_nvras.get(cleaned, [])
+                if not any(
+                    pkg_dist_compatible_with_rh(advisory_pkg.nevra, pkg)
+                    for pkg in exact_pkgs
+                ):
                     # Prefix (.rocky) or EVR >= when Rocky already ships newer
                     alias = find_nvra_alias(
                         cleaned,
@@ -877,34 +1031,38 @@ async def process_repomd(
             logger.debug(f"No cleaned packages for {advisory.name}, moving on.")
             continue
 
-        did_match_any = False
-        for nevra, _ in clean_advisory_nvras.items():
+        matched_pkgs = set()
+        for nevra, rh_nevra in clean_advisory_nvras.items():
+            exact_hit = False
             if nevra in raw_pkg_nvras:
                 for pkg in raw_pkg_nvras[nevra]:
-                    cleaned, raw = repomd.clean_nvra_pkg(pkg)
+                    if not pkg_dist_compatible_with_rh(rh_nevra, pkg):
+                        continue
                     pkg.set("repo_name", rpm_repomd.repo_name)
                     pkg.set("mirror_id", str(mirror.id))
-                    check_pkgs.add(pkg)
-                    did_match_any = True
+                    matched_pkgs.add(pkg)
+                    exact_hit = True
 
-            elif nevra in nvra_alias:
+            if exact_hit:
+                continue
+            if nevra in nvra_alias:
                 logger.debug(f"nevra: {nevra}")
                 logger.debug(f"nvra_alias[nevra]: {nvra_alias[nevra]}")
                 for pkg in raw_pkg_nvras.get(nvra_alias[nevra], []):
-                    cleaned, raw = repomd.clean_nvra_pkg(pkg)
+                    if not pkg_dist_compatible_with_rh(rh_nevra, pkg):
+                        continue
                     pkg.set("repo_name", rpm_repomd.repo_name)
                     pkg.set("mirror_id", str(mirror.id))
-                    check_pkgs.add(pkg)
-                    did_match_any = True
+                    matched_pkgs.add(pkg)
 
-        if did_match_any:
+        if matched_pkgs:
             logger.debug(f"Found packages for {advisory.name}")
             ret.update(
                 {
                     advisory.name:
                         {
                             "advisory": advisory,
-                            "packages": [check_pkgs], # list of xml element strings
+                            "packages": [matched_pkgs],
                             "module_packages": module_packages,
                         }
                 }
@@ -924,9 +1082,13 @@ async def match_rh_repos(params) -> None:
     if isinstance(params, int):
         supported_product_id = params
         filter_major_versions = None
+        replace_packages = False
+        include_historical = False
     else:
         supported_product_id = params["supported_product_id"]
         filter_major_versions = params.get("filter_major_versions")
+        replace_packages = bool(params.get("replace_packages", False))
+        include_historical = bool(params.get("include_historical", False))
     
     logger = Logger()
     supported_product = await SupportedProduct.filter(
@@ -938,6 +1100,9 @@ async def match_rh_repos(params) -> None:
     for mirror in supported_product.rh_mirrors:
         if not mirror.active:
             logger.debug(f"Skipping inactive mirror {mirror.name}")
+            continue
+        if _is_historical_mirror(mirror) and not include_historical:
+            logger.info("Skipping historical mirror %s", mirror.name)
             continue
         # Apply major version filtering if specified
         if filter_major_versions is not None and int(mirror.match_major_version) not in filter_major_versions:
@@ -980,6 +1145,7 @@ async def match_rh_repos(params) -> None:
             obj["packages"],
             obj["module_packages"],
             obj["published_at"],
+            replace_packages=replace_packages,
         )
 
 

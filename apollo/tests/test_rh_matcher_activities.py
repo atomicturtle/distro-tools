@@ -4,6 +4,7 @@ Tests for RH matcher activities
 
 import unittest
 import asyncio
+import datetime
 import sys
 import os
 from unittest.mock import Mock, MagicMock, patch, AsyncMock
@@ -11,8 +12,22 @@ from xml.etree import ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
+from common.info import Info
+
+if Info._name is None:  # pylint: disable=protected-access
+    Info("apollotest", "apollo2")
+
 from apollo.rpmworker import repomd
-from apollo.rpmworker.rh_matcher_activities import process_repomd, stream_product_name
+from apollo.rpmworker.rh_matcher_activities import (
+    advisory_clone_published_at,
+    affected_product_rows_from_packages,
+    create_or_update_advisory_packages,
+    NewPackage,
+    process_repomd,
+    rh_advisory_matches_major,
+    stream_product_name,
+    _is_historical_mirror,
+)
 
 NS = "http://linux.duke.edu/metadata/common"
 RPM_NS = "http://linux.duke.edu/metadata/rpm"
@@ -523,6 +538,364 @@ class TestStreamProductName(unittest.TestCase):
         mirror.match_major_version = 10
         mirror.match_minor_version = 0
         self.assertEqual(stream_product_name(mirror), "Rocky Linux 10 riscv64")
+
+    def test_vault_suffix_stripped_before_label(self):
+        mirror = _make_mirror(name="Rocky Linux 10 x86_64 [vault 10.0]")
+        mirror.match_major_version = 10
+        mirror.match_minor_version = 0
+        self.assertEqual(stream_product_name(mirror), "Rocky Linux 10 x86_64")
+        self.assertTrue(_is_historical_mirror(mirror))
+
+    def test_stream_mirror_is_not_historical(self):
+        self.assertFalse(_is_historical_mirror(_make_mirror()))
+
+
+class TestAdvisoryClonePublishedAt(unittest.TestCase):
+    def test_prefers_red_hat_issued_at(self):
+        advisory = Mock()
+        advisory.red_hat_issued_at = datetime.datetime(2025, 10, 3, 19, 56, 45)
+        fallback = datetime.datetime(2026, 8, 28, 20, 0, 0)
+        self.assertEqual(
+            advisory_clone_published_at(advisory, fallback),
+            advisory.red_hat_issued_at,
+        )
+
+    def test_falls_back_when_issued_missing(self):
+        advisory = Mock()
+        advisory.red_hat_issued_at = None
+        fallback = datetime.datetime(2026, 8, 28, 20, 0, 0)
+        self.assertEqual(advisory_clone_published_at(advisory, fallback), fallback)
+
+
+def _new_pkg(nevra, product_name="Rocky Linux 10 x86_64"):
+    return NewPackage(
+        nevra=nevra,
+        checksum="abc",
+        checksum_type="sha256",
+        module_context=None,
+        module_name=None,
+        module_stream=None,
+        module_version=None,
+        repo_name="AppStream",
+        package_name="firefox",
+        mirror_id=1,
+        supported_product_id=1,
+        product_name=product_name,
+    )
+
+
+class TestCreateOrUpdateAdvisoryPackages(unittest.TestCase):
+    def setUp(self):
+        self._logger_patcher = patch(
+            "apollo.rpmworker.rh_matcher_activities.Logger"
+        )
+        self._logger_patcher.start()
+
+    def tearDown(self):
+        self._logger_patcher.stop()
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_rematch_does_not_replace_existing_nevras(self):
+        existing = Mock(
+            id=1,
+            nevra="firefox-0:128.12.0-1.el10_0.x86_64.rpm",
+            product_name="Rocky Linux 10 x86_64",
+            module_name=None,
+        )
+        filter_mock = MagicMock()
+        filter_mock.all = AsyncMock(return_value=[existing])
+        filter_mock.update = AsyncMock()
+        filter_mock.delete = AsyncMock()
+        advisory = Mock(id=10, name="RLSA-2025:10073")
+        newer = _new_pkg("firefox-0:140.10.2-1.el10_2.x86_64.rpm")
+        with patch(
+            "apollo.rpmworker.rh_matcher_activities.AdvisoryPackage"
+        ) as AP:
+            AP.filter.return_value = filter_mock
+            AP.bulk_create = AsyncMock()
+            self._run(
+                create_or_update_advisory_packages(
+                    advisory, [newer], update_advisory=True
+                )
+            )
+            AP.bulk_create.assert_not_called()
+            filter_mock.delete.assert_not_called()
+
+    def test_repair_replaces_nevras(self):
+        existing = Mock(
+            id=1,
+            nevra="firefox-0:140.10.2-1.el10_2.x86_64.rpm",
+            product_name="Rocky Linux 10 x86_64",
+            module_name=None,
+        )
+        filter_mock = MagicMock()
+        filter_mock.all = AsyncMock(return_value=[existing])
+        filter_mock.update = AsyncMock()
+        filter_mock.delete = AsyncMock()
+        advisory = Mock(id=10, name="RLSA-2025:10073")
+        shipped = _new_pkg("firefox-0:128.12.0-1.el10_0.x86_64.rpm")
+        with patch(
+            "apollo.rpmworker.rh_matcher_activities.AdvisoryPackage"
+        ) as AP:
+            AP.filter.return_value = filter_mock
+            AP.bulk_create = AsyncMock()
+            self._run(
+                create_or_update_advisory_packages(
+                    advisory,
+                    [shipped],
+                    update_advisory=True,
+                    replace_packages=True,
+                )
+            )
+            AP.bulk_create.assert_called_once()
+            filter_mock.delete.assert_called_once()
+
+
+class TestProcessRepomdSkippedUrls(unittest.TestCase):
+    def setUp(self):
+        self._logger_patcher = patch(
+            "apollo.rpmworker.rh_matcher_activities.Logger"
+        )
+        self._logger_patcher.start()
+
+    def tearDown(self):
+        self._logger_patcher.stop()
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_debug_url_404_does_not_abort_os_match(self):
+        repo_pkgs = [_make_pkg_element("bash", "5.1.8", "9.el9_7", "x86_64")]
+        advisory = _make_advisory(
+            "RHSA-2026:0001",
+            ["bash-0:5.1.8-9.el9_7.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+
+        async def download_or_fail(url, **kwargs):
+            if "debug" in url:
+                raise Exception(f"Failed to get {url}: 404")
+            return await fake_dl(url, **kwargs)
+
+        with patch.object(repomd, "download_xml", side_effect=download_or_fail), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertIn("RHSA-2026:0001", result)
+
+    def test_firefox_picks_el10_0_when_both_in_index(self):
+        repo_pkgs = [
+            _make_pkg_element("firefox", "128.12.0", "1.el10_0", "x86_64"),
+            _make_pkg_element("firefox", "140.10.2", "1.el10_2", "x86_64"),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2025:10073",
+            ["firefox-0:128.12.0-1.el10_0.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertIn("RHSA-2025:10073", result)
+
+    def test_firefox_el10_2_alone_does_not_match_el10_0_rhsa(self):
+        """Current AppStream HEAD must not clone an el10_0 RHSA."""
+        repo_pkgs = [
+            _make_pkg_element("firefox", "140.10.2", "1.el10_2", "x86_64"),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2025:10073",
+            ["firefox-0:128.12.0-1.el10_0.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertNotIn("RHSA-2025:10073", result)
+
+    def test_firefox_el8_same_nvr_does_not_match_el10_rhsa(self):
+        """Cleaned NVR is identical; dist major must still differ."""
+        repo_pkgs = [
+            _make_pkg_element("firefox", "128.12.0", "1.el8_10", "x86_64"),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2025:10073",
+            ["firefox-0:128.12.0-1.el10_0.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertNotIn("RHSA-2025:10073", result)
+
+    def test_firefox_mixed_majors_only_el10_matches(self):
+        repo_pkgs = [
+            _make_pkg_element("firefox", "128.12.0", "1.el8_10", "x86_64"),
+            _make_pkg_element("firefox", "128.12.0", "1.el9_6", "x86_64"),
+            _make_pkg_element("firefox", "128.12.0", "1.el10_0", "x86_64"),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2025:10073",
+            ["firefox-0:128.12.0-1.el10_0.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertIn("RHSA-2025:10073", result)
+        pkgs = result["RHSA-2025:10073"]["packages"][0]
+        releases = sorted(
+            pkg.find(f"{{{NS}}}version").attrib["rel"] for pkg in pkgs
+        )
+        self.assertEqual(releases, ["1.el10_0"])
+
+    def test_openssl_el8_6_rhsa_matches_el8_10_rebuild(self):
+        """Production RLSA-2024:7848 is 1.1.1k-14.el8_10 for an el8_6 RHSA."""
+        repo_pkgs = [
+            _make_pkg_element(
+                "openssl-libs", "1.1.1k", "14.el8_10", "x86_64", epoch="1"
+            ),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2024:7848",
+            ["openssl-libs-1:1.1.1k-14.el8_6.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertIn("RHSA-2024:7848", result)
+
+    def test_openssl_el9_does_not_match_el8_rhsa(self):
+        """Vault EL9 openssl 3.x must not clone an EL8 1.1.1k RHSA."""
+        repo_pkgs = [
+            _make_pkg_element(
+                "openssl-libs", "3.0.1", "43.el9_0", "x86_64", epoch="1"
+            ),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2024:7848",
+            ["openssl-libs-1:1.1.1k-14.el8_10.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertNotIn("RHSA-2024:7848", result)
+
+    def test_matched_packages_are_isolated_per_advisory(self):
+        repo_pkgs = [
+            _make_pkg_element("bash", "5.1.8", "9.el9_7", "x86_64"),
+            _make_pkg_element("firefox", "128.12.0", "1.el9_6", "x86_64"),
+        ]
+        bash = _make_advisory(
+            "RHSA-2026:0001",
+            ["bash-0:5.1.8-9.el9_7.x86_64.rpm"],
+        )
+        firefox = _make_advisory(
+            "RHSA-2025:10072",
+            ["firefox-0:128.12.0-1.el9_6.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(
+                    _make_mirror(), _make_rpm_repomd(), [bash, firefox]
+                )
+            )
+        bash_names = {
+            pkg.find(f"{{{NS}}}name").text
+            for pkg in result["RHSA-2026:0001"]["packages"][0]
+        }
+        ff_names = {
+            pkg.find(f"{{{NS}}}name").text
+            for pkg in result["RHSA-2025:10072"]["packages"][0]
+        }
+        self.assertEqual(bash_names, {"bash"})
+        self.assertEqual(ff_names, {"firefox"})
+
+
+class TestAffectedProductRowsFromPackages(unittest.TestCase):
+    def test_rows_follow_cloned_nevras_not_walked_majors(self):
+        pkgs = [
+            _new_pkg(
+                "openssl-libs-1:1.1.1k-14.el8_10.x86_64.rpm",
+                product_name="Rocky Linux 8 x86_64",
+            ),
+            _new_pkg(
+                "openssl-libs-1:1.1.1k-14.el8_10.aarch64.rpm",
+                product_name="Rocky Linux 8 aarch64",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(10, "Rocky Linux", pkgs)
+        majors = sorted({row["major_version"] for row in rows})
+        names = sorted({row["name"] for row in rows})
+        self.assertEqual(majors, [8])
+        self.assertEqual(names, ["Rocky Linux 8 aarch64", "Rocky Linux 8 x86_64"])
+        self.assertTrue(all(row["minor_version"] is None for row in rows))
+
+    def test_empty_product_name_synthesizes_stream_label(self):
+        pkgs = [
+            _new_pkg(
+                "openssl-libs-1:3.2.2-6.el9_5.x86_64.rpm",
+                product_name="",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(11, "Rocky Linux", pkgs)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "Rocky Linux 9 x86_64")
+        self.assertEqual(rows[0]["major_version"], 9)
+        self.assertEqual(rows[0]["arch"], "x86_64")
+
+    def test_stale_walk_product_name_does_not_widen_major(self):
+        pkgs = [
+            _new_pkg(
+                "nodejs-1:12.18.4-2.module+el8.3.0+101.x86_64.rpm",
+                product_name="Rocky Linux 9 x86_64",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(12, "Rocky Linux", pkgs)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["major_version"], 8)
+        self.assertEqual(rows[0]["name"], "Rocky Linux 8 x86_64")
+
+
+class TestRhAdvisoryMatchesMajor(unittest.TestCase):
+    def test_affected_product_major_wins(self):
+        advisory = _make_advisory(
+            "RHSA-2025:10073",
+            ["firefox-0:128.12.0-1.el10_0.x86_64.rpm"],
+        )
+        product = Mock()
+        product.major_version = 10
+        advisory.affected_products = [product]
+        self.assertTrue(rh_advisory_matches_major(advisory, 10))
+        self.assertFalse(rh_advisory_matches_major(advisory, 8))
+
+    def test_package_dist_when_no_affected_products(self):
+        advisory = _make_advisory(
+            "RHSA-2025:10073",
+            ["firefox-0:128.12.0-1.el10_0.x86_64.rpm"],
+        )
+        advisory.affected_products = []
+        self.assertTrue(rh_advisory_matches_major(advisory, 10))
+        self.assertFalse(rh_advisory_matches_major(advisory, 8))
 
 
 if __name__ == "__main__":
