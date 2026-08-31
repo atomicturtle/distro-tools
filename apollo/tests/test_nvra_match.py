@@ -5,6 +5,7 @@ from xml.etree import ElementTree as ET
 
 from apollo.rpmworker.nvra_match import (
     find_nvra_alias,
+    lowest_compatible_pkgs,
     pkg_dist_compatible_with_rh,
     _is_rebuild_prefix,
 )
@@ -154,6 +155,81 @@ class TestFindNvraAlias(unittest.TestCase):
             raw_pkg_nvras=raw,
         )
         self.assertIsNone(alias)
+
+
+class TestLowestCompatiblePkgs(unittest.TestCase):
+    def test_module_streams_keep_lowest_evr(self):
+        """Cleaning strips module+el8.Y; keep vault el8.5 not current el8.10."""
+        older = _pkg(
+            "python2-attrs",
+            "17.4.0",
+            "10.module+el8.5.0+706+e497ead8",
+            "noarch",
+        )
+        newer = _pkg(
+            "python2-attrs",
+            "17.4.0",
+            "10.module+el8.10.0+40170+3b32c808",
+            "noarch",
+        )
+        picked = lowest_compatible_pkgs(
+            "python2-attrs-0:17.4.0-10.module+el8.0.0+2961+596d0223.noarch.rpm",
+            [newer, older],
+        )
+        self.assertEqual(picked, [older])
+
+    def test_openssl_el8_10_satisfies_el8_6(self):
+        rocky = _pkg(
+            "openssl-libs", "1.1.1k", "14.el8_10", "x86_64", epoch="1"
+        )
+        picked = lowest_compatible_pkgs(
+            "openssl-libs-1:1.1.1k-14.el8_6.x86_64.rpm",
+            [rocky],
+        )
+        self.assertEqual(picked, [rocky])
+
+    def test_older_than_rh_skipped(self):
+        older = _pkg("openssh", "8.7p1", "48.el9_7", "x86_64")
+        picked = lowest_compatible_pkgs(
+            "openssh-0:8.7p1-49.el9_7.x86_64.rpm",
+            [older],
+        )
+        self.assertEqual(picked, [])
+
+    def test_one_per_arch(self):
+        x86 = _pkg(
+            "python2-attrs",
+            "17.4.0",
+            "10.module+el8.5.0+706+e497ead8",
+            "x86_64",
+        )
+        aarch = _pkg(
+            "python2-attrs",
+            "17.4.0",
+            "10.module+el8.5.0+706+e497ead8",
+            "aarch64",
+        )
+        newer_x86 = _pkg(
+            "python2-attrs",
+            "17.4.0",
+            "10.module+el8.10.0+40170+3b32c808",
+            "x86_64",
+        )
+        picked = lowest_compatible_pkgs(
+            "python2-attrs-0:17.4.0-10.module+el8.0.0+2961+596d0223.x86_64.rpm",
+            [newer_x86, x86, aarch],
+        )
+        rels = {
+            (p.find(f"{{{NS}}}arch").text, p.find(f"{{{NS}}}version").attrib["rel"])
+            for p in picked
+        }
+        self.assertEqual(
+            rels,
+            {
+                ("x86_64", "10.module+el8.5.0+706+e497ead8"),
+                ("aarch64", "10.module+el8.5.0+706+e497ead8"),
+            },
+        )
 
 
 class TestPkgDistCompatibleWithRh(unittest.TestCase):

@@ -9,7 +9,7 @@ from tortoise.transactions import in_transaction
 from apollo.db import SupportedProduct, SupportedProductsRhMirror, SupportedProductsRpmRepomd, SupportedProductsRpmRhOverride, SupportedProductsRhBlock
 from apollo.db import RedHatAdvisory, Advisory, AdvisoryAffectedProduct, AdvisoryCVE, AdvisoryFix, AdvisoryPackage
 from apollo.rpmworker import repomd
-from apollo.rpmworker.nvra_match import find_nvra_alias, pkg_dist_compatible_with_rh
+from apollo.rpmworker.nvra_match import find_nvra_alias, lowest_compatible_pkgs
 from apollo.rpm_helpers import parse_dist_version, parse_nevra
 from apollo.rhcsaf import fix_source_url
 
@@ -708,15 +708,13 @@ async def clone_advisory(
             pkg_name_map[name].append(cleaned)
 
     # Alias advisory NVRA → repo NVRA via .rocky prefix or EVR >=.
-    # A cleaned-key hit still needs a dist-compatible package; otherwise
-    # firefox-128.12.0-1.el8_10 would steal an el10_0 RHSA.
+    # A cleaned-key hit must still yield a lowest EVR >= RH (same dist
+    # major). Dist-compatible XML alone is not enough: module streams
+    # share a cleaned key after stripping ``.module+el8.Y``.
     nvra_alias = {}
     for advisory_nvra, advisory_nevra in clean_advisory_nvras.items():
         exact_pkgs = pkg_nvras.get(advisory_nvra, [])
-        if any(
-            pkg_dist_compatible_with_rh(advisory_nevra, pkg)
-            for pkg in exact_pkgs
-        ):
+        if lowest_compatible_pkgs(advisory_nevra, exact_pkgs):
             continue
         match = repomd.NVRA_RE.search(advisory_nvra)
         if not match:
@@ -771,20 +769,19 @@ async def clone_advisory(
         rh_modules_by_cleaned = _rh_modules_by_cleaned_nevra(advisory)
         for cleaned_rh_nvra, rh_nevra in clean_advisory_nvras.items():
             advisory_nvra = cleaned_rh_nvra
-            exact_pkgs = pkg_nvras.get(advisory_nvra, [])
-            if not any(
-                pkg_dist_compatible_with_rh(rh_nevra, pkg)
-                for pkg in exact_pkgs
-            ):
+            pkgs_to_process = lowest_compatible_pkgs(
+                rh_nevra, pkg_nvras.get(advisory_nvra, [])
+            )
+            if not pkgs_to_process:
                 if advisory_nvra in nvra_alias:
                     advisory_nvra = nvra_alias[advisory_nvra]
-                else:
+                    pkgs_to_process = lowest_compatible_pkgs(
+                        rh_nevra, pkg_nvras.get(advisory_nvra, [])
+                    )
+                if not pkgs_to_process:
                     continue
 
-            pkgs_to_process = pkg_nvras[advisory_nvra]
             for pkg in pkgs_to_process:
-                if not pkg_dist_compatible_with_rh(rh_nevra, pkg):
-                    continue
                 pkg_name = pkg.find(
                     "{http://linux.duke.edu/metadata/common}name"
                 ).text
@@ -1057,10 +1054,7 @@ async def process_repomd(
             )
             if cleaned not in clean_advisory_nvras:
                 exact_pkgs = raw_pkg_nvras.get(cleaned, [])
-                if not any(
-                    pkg_dist_compatible_with_rh(advisory_pkg.nevra, pkg)
-                    for pkg in exact_pkgs
-                ):
+                if not lowest_compatible_pkgs(advisory_pkg.nevra, exact_pkgs):
                     # Prefix (.rocky) or EVR >= when Rocky already ships newer
                     alias = find_nvra_alias(
                         cleaned,
@@ -1078,27 +1072,19 @@ async def process_repomd(
 
         matched_pkgs = set()
         for nevra, rh_nevra in clean_advisory_nvras.items():
-            exact_hit = False
-            if nevra in raw_pkg_nvras:
-                for pkg in raw_pkg_nvras[nevra]:
-                    if not pkg_dist_compatible_with_rh(rh_nevra, pkg):
-                        continue
-                    pkg.set("repo_name", rpm_repomd.repo_name)
-                    pkg.set("mirror_id", str(mirror.id))
-                    matched_pkgs.add(pkg)
-                    exact_hit = True
-
-            if exact_hit:
-                continue
-            if nevra in nvra_alias:
+            selected = lowest_compatible_pkgs(
+                rh_nevra, raw_pkg_nvras.get(nevra, [])
+            )
+            if not selected and nevra in nvra_alias:
                 logger.debug(f"nevra: {nevra}")
                 logger.debug(f"nvra_alias[nevra]: {nvra_alias[nevra]}")
-                for pkg in raw_pkg_nvras.get(nvra_alias[nevra], []):
-                    if not pkg_dist_compatible_with_rh(rh_nevra, pkg):
-                        continue
-                    pkg.set("repo_name", rpm_repomd.repo_name)
-                    pkg.set("mirror_id", str(mirror.id))
-                    matched_pkgs.add(pkg)
+                selected = lowest_compatible_pkgs(
+                    rh_nevra, raw_pkg_nvras.get(nvra_alias[nevra], [])
+                )
+            for pkg in selected:
+                pkg.set("repo_name", rpm_repomd.repo_name)
+                pkg.set("mirror_id", str(mirror.id))
+                matched_pkgs.add(pkg)
 
         if matched_pkgs:
             logger.debug(f"Found packages for {advisory.name}")

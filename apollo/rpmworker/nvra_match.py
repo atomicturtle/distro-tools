@@ -3,11 +3,14 @@ NVRA matching helpers for RH → Rocky advisory cloning.
 
 Matching order:
 1. Exact cleaned NVRA (handled by callers via dict lookup) **plus**
-   ``pkg_dist_compatible_with_rh``. Cleaning strips ``.el10_0`` / ``.el8_10``,
-   so the same NVR must not attach an EL8 Rocky RPM to an EL10 RHSA.
+   ``lowest_compatible_pkgs``. Cleaning strips ``.el10_0`` / ``.el8_10``
+   and ``.module+el8.Y.0+build``, so several Rocky rebuilds share a key.
+   Callers must keep **one** XML package per (name, arch): the lowest EVR
+   that is still >= the RH fixed EVR on the same dist major. Attaching
+   every module stream makes clone fidelity report the newest (el8.10)
+   even when vault still has the shipped el8.5 rebuild.
    Point-release tags on the same major may differ: Rocky ships RH
-   ``el8_6`` openssl as ``el8_10`` (RLSA-2024:7848). EVR is not re-checked
-   on this path.
+   ``el8_6`` openssl as ``el8_10`` (RLSA-2024:7848).
 2. Prefix match (Rocky .rocky.* rebuild suffix on the same NVR), with a
    '.' boundary so release ``80`` does not match ``8``, plus EVR >= when
    package XML is available.
@@ -56,6 +59,54 @@ def pkg_dist_compatible_with_rh(rh_nevra: str, pkg: ET.Element) -> bool:
     if evr is None:
         return False
     return _dist_compatible(adv["release"], evr[2])
+
+
+def _pkg_name_arch(pkg: ET.Element) -> tuple[str, str] | None:
+    name_el = pkg.find(f"{{{COMMON_NS}}}name")
+    arch_el = pkg.find(f"{{{COMMON_NS}}}arch")
+    if name_el is None or arch_el is None or not name_el.text or not arch_el.text:
+        return None
+    return (name_el.text, arch_el.text)
+
+
+def lowest_compatible_pkgs(
+    rh_nevra: str,
+    pkgs: list[ET.Element],
+) -> list[ET.Element]:
+    """One Rocky XML package per (name, arch): lowest EVR >= RH.
+
+    Cleaning collapses ``python2-attrs-17.4.0-10.module+el8.5.0+…`` and
+    ``…module+el8.10.0+…`` onto the same key. Dist-major compatibility
+    alone would attach both; fidelity then reports the newer stream.
+    """
+    try:
+        adv = parse_nevra(rh_nevra)
+    except ValueError:
+        return []
+
+    best: dict[tuple[str, str], tuple[tuple[str, str, str], ET.Element]] = {}
+    for pkg in pkgs:
+        if not pkg_dist_compatible_with_rh(rh_nevra, pkg):
+            continue
+        evr = _pkg_evr(pkg)
+        if evr is None:
+            continue
+        if evr[1] != adv["version"]:
+            continue
+        if not evr_gte(
+            evr[0], evr[1], evr[2],
+            adv["epoch"], adv["version"], adv["release"],
+        ):
+            continue
+        key = _pkg_name_arch(pkg)
+        if key is None:
+            continue
+        prev = best.get(key)
+        if prev is None or label_compare(
+            evr[0], evr[1], evr[2], prev[0][0], prev[0][1], prev[0][2]
+        ) < 0:
+            best[key] = (evr, pkg)
+    return [item[1] for item in best.values()]
 
 
 def _pkg_evr(pkg: ET.Element) -> tuple[str, str, str] | None:

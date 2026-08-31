@@ -337,6 +337,39 @@ class TestProcessRepomdMatching(unittest.TestCase):
             )
         self.assertIn("RHSA-2026:0004", result)
 
+    def test_module_cleaned_key_keeps_lowest_evr(self):
+        """el8.5 and el8.10 share a cleaned module NVR; keep the older rebuild."""
+        repo_pkgs = [
+            _make_pkg_element(
+                "python2-attrs",
+                "17.4.0",
+                "10.module+el8.10.0+40170+3b32c808",
+                "noarch",
+            ),
+            _make_pkg_element(
+                "python2-attrs",
+                "17.4.0",
+                "10.module+el8.5.0+706+e497ead8",
+                "noarch",
+            ),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2019:0981",
+            [
+                "python2-attrs-0:17.4.0-10.module+el8.0.0+2961+596d0223.noarch.rpm",
+            ],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(_make_mirror(), _make_rpm_repomd(), [advisory])
+            )
+        self.assertIn("RHSA-2019:0981", result)
+        pkgs = result["RHSA-2019:0981"]["packages"][0]
+        rels = {pkg.find(f"{{{NS}}}version").attrib["rel"] for pkg in pkgs}
+        self.assertEqual(rels, {"10.module+el8.5.0+706+e497ead8"})
+
     def test_arch_mismatch_no_match(self):
         """Packages with wrong arch don't match."""
         repo_pkgs = [
