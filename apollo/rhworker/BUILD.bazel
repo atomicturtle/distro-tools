@@ -29,6 +29,7 @@ py_library(
         "//apollo/db:db_lib",
         "//apollo/rherrata:rherrata_lib",
         "//apollo/rhcsaf:rhcsaf_lib",
+        "//apollo/rpmworker:rpmworker_lib",
         "//common:common_lib",
         "@pypi_aiohttp//:pkg",
         "@pypi_temporalio//:pkg",

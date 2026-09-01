@@ -18,7 +18,9 @@ with patch('common.logger.Logger') as mock_logger_class:
         RedHatAdvisoryPackage, 
         RedHatAdvisoryCVE, 
         RedHatAdvisoryBugzillaBug, 
-        RedHatAdvisoryAffectedProduct
+        RedHatAdvisoryAffectedProduct,
+        Advisory,
+        AdvisoryCVE,
     )
 
 class TestCsafProcessing(unittest.IsolatedAsyncioTestCase):
@@ -143,6 +145,8 @@ class TestCsafProcessing(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         # Clean up database entries and temporary files after each test
+        await AdvisoryCVE.all().delete()
+        await Advisory.all().delete()
         await RedHatAdvisory.all().delete()
         await RedHatAdvisoryPackage.all().delete()
         await RedHatAdvisoryCVE.all().delete()
@@ -225,6 +229,44 @@ class TestCsafProcessing(unittest.IsolatedAsyncioTestCase):
         
         # Verify the issue date was updated
         self.assertNotEqual(updated.red_hat_issued_at, datetime(2024, 1, 1))
+
+    async def test_csaf_update_replaces_clone_cve_set(self):
+        rh = await RedHatAdvisory.create(
+            name="RHSA-2025:1234",
+            red_hat_issued_at=datetime(2024, 1, 1),
+            red_hat_updated_at=datetime(2024, 1, 1),
+            synopsis="Important: package security update",
+            description="Test description",
+            kind="Security",
+            severity="Important",
+            topic="Test topic",
+        )
+        await RedHatAdvisoryCVE.create(
+            red_hat_advisory=rh,
+            cve="CVE-2019-14378",
+            cvss3_scoring_vector=None,
+            cvss3_base_score=None,
+            cwe=None,
+        )
+        clone = await Advisory.create(
+            name="RLSA-2025:1234",
+            synopsis="Important: package security update",
+            description="Test description",
+            kind="Security",
+            severity="Important",
+            topic="Test topic",
+            published_at=datetime(2024, 1, 1),
+            red_hat_advisory=rh,
+        )
+        await AdvisoryCVE.create(
+            advisory=clone,
+            cve="CVE-2019-14378",
+        )
+
+        await process_csaf_file(self.sample_csaf, "test.json")
+
+        clone_cves = [c.cve for c in await AdvisoryCVE.filter(advisory_id=clone.id)]
+        self.assertEqual(clone_cves, ["CVE-2025-1234"])
 
     async def test_invalid_csaf_file(self):
         # Test handling of invalid CSAF file

@@ -7,7 +7,7 @@ from temporalio import activity
 from tortoise.transactions import in_transaction
 
 from apollo.db import SupportedProduct, SupportedProductsRhMirror, SupportedProductsRpmRepomd, SupportedProductsRpmRhOverride, SupportedProductsRhBlock
-from apollo.db import RedHatAdvisory, Advisory, AdvisoryAffectedProduct, AdvisoryCVE, AdvisoryFix, AdvisoryPackage
+from apollo.db import RedHatAdvisory, RedHatAdvisoryCVE, Advisory, AdvisoryAffectedProduct, AdvisoryCVE, AdvisoryFix, AdvisoryPackage
 from apollo.rpmworker import repomd
 from apollo.rpmworker.nvra_match import (
     find_nvra_alias,
@@ -479,6 +479,19 @@ async def create_or_update_advisory_cves(
         if cves_to_remove:
             logger.info("Removing %d CVEs from advisory %s", len(cves_to_remove), advisory.name)
             await AdvisoryCVE.filter(advisory_id=advisory.id, cve__in=list(cves_to_remove)).delete()
+
+
+async def sync_clone_cves_from_redhat(rh_advisory: RedHatAdvisory) -> None:
+    """Replace a Rocky clone's CVE set with the current Red Hat advisory set.
+
+    Empty RH lists are applied: bugfix clones must not keep leftover CVEs.
+    No-op when no clone exists yet.
+    """
+    clone = await Advisory.filter(red_hat_advisory_id=rh_advisory.id).get_or_none()
+    if not clone:
+        return
+    rh_cves = await RedHatAdvisoryCVE.filter(red_hat_advisory_id=rh_advisory.id).all()
+    await create_or_update_advisory_cves(clone, rh_cves, update_advisory=True)
 
 async def create_or_update_advisory_fixes(
     advisory: Advisory,
@@ -988,9 +1001,10 @@ async def clone_advisory(
             replace_packages=replace_packages,
         )
 
-        # Clone CVEs
-        if advisory.cves:
-            await create_or_update_advisory_cves(new_advisory, advisory.cves, update_advisory)
+        # Clone CVEs from the current RH set, including empty (drop leftovers).
+        await create_or_update_advisory_cves(
+            new_advisory, advisory.cves or [], update_advisory
+        )
 
         # Clone fixes
         if advisory.bugzilla_tickets:

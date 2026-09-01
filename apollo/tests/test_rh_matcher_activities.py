@@ -21,12 +21,14 @@ from apollo.rpmworker import repomd
 from apollo.rpmworker.rh_matcher_activities import (
     advisory_clone_published_at,
     affected_product_rows_from_packages,
+    create_or_update_advisory_cves,
     create_or_update_advisory_packages,
     NewPackage,
     process_repomd,
     repo_arch_for_mirror,
     rh_advisory_matches_major,
     stream_product_name,
+    sync_clone_cves_from_redhat,
     _is_historical_mirror,
     _nvra_with_arch,
     _repomd_belongs_to_mirror,
@@ -1208,6 +1210,85 @@ class TestRhAdvisoryMatchesMajor(unittest.TestCase):
         advisory.affected_products = []
         self.assertTrue(rh_advisory_matches_major(advisory, 10))
         self.assertFalse(rh_advisory_matches_major(advisory, 8))
+
+
+class TestCloneCvesFromRedHat(unittest.TestCase):
+    def setUp(self):
+        self._logger_patcher = patch(
+            "apollo.rpmworker.rh_matcher_activities.Logger"
+        )
+        self._logger_patcher.start()
+
+    def tearDown(self):
+        self._logger_patcher.stop()
+
+    def _run(self, coro):
+        return asyncio.run(coro)
+
+    def test_empty_rh_list_removes_clone_cves_on_update(self):
+        stray = Mock(cve="CVE-2019-14378")
+        filter_mock = MagicMock()
+        filter_mock.all = AsyncMock(return_value=[stray])
+        filter_mock.delete = AsyncMock()
+        clone = Mock(id=10, name="RLBA-2019:2715")
+        with patch("apollo.rpmworker.rh_matcher_activities.AdvisoryCVE") as AC:
+            AC.filter.return_value = filter_mock
+            self._run(
+                create_or_update_advisory_cves(clone, [], update_advisory=True)
+            )
+            filter_mock.delete.assert_called_once()
+            kwargs = filter_mock.delete.call_args
+            self.assertIsNotNone(kwargs)
+
+    def test_empty_rh_list_keeps_clone_cves_on_first_create(self):
+        stray = Mock(cve="CVE-2019-14378")
+        filter_mock = MagicMock()
+        filter_mock.all = AsyncMock(return_value=[stray])
+        filter_mock.delete = AsyncMock()
+        clone = Mock(id=10, name="RLBA-2019:2715")
+        with patch("apollo.rpmworker.rh_matcher_activities.AdvisoryCVE") as AC:
+            AC.filter.return_value = filter_mock
+            self._run(
+                create_or_update_advisory_cves(clone, [], update_advisory=False)
+            )
+            filter_mock.delete.assert_not_called()
+
+    def test_adds_rh_cve_missing_on_clone(self):
+        filter_mock = MagicMock()
+        filter_mock.all = AsyncMock(return_value=[])
+        filter_mock.delete = AsyncMock()
+        clone = Mock(id=10, name="RLSA-2019:2511")
+        rh_cve = Mock(
+            cve="CVE-2022-21589",
+            cvss3_scoring_vector="CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N",
+            cvss3_base_score="4.3",
+            cwe=None,
+        )
+        with patch("apollo.rpmworker.rh_matcher_activities.AdvisoryCVE") as AC:
+            AC.filter.return_value = filter_mock
+            AC.create = AsyncMock()
+            self._run(
+                create_or_update_advisory_cves(
+                    clone, [rh_cve], update_advisory=True
+                )
+            )
+            AC.create.assert_called_once()
+            self.assertEqual(AC.create.call_args.kwargs["cve"], "CVE-2022-21589")
+
+    def test_sync_is_noop_when_no_clone(self):
+        rh = Mock(id=5, name="RHBA-2019:2715")
+        with patch(
+            "apollo.rpmworker.rh_matcher_activities.Advisory"
+        ) as Adv, patch(
+            "apollo.rpmworker.rh_matcher_activities.RedHatAdvisoryCVE"
+        ) as RHC, patch(
+            "apollo.rpmworker.rh_matcher_activities.create_or_update_advisory_cves",
+            new_callable=AsyncMock,
+        ) as sync_fn:
+            Adv.filter.return_value.get_or_none = AsyncMock(return_value=None)
+            self._run(sync_clone_cves_from_redhat(rh))
+            RHC.filter.assert_not_called()
+            sync_fn.assert_not_called()
 
 
 if __name__ == "__main__":

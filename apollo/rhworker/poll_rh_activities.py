@@ -621,6 +621,10 @@ async def process_csaf_file(json_data: dict, filepath: str) -> Optional[RedHatAd
             await create_or_update_red_hat_advisory_cves(
                 advisory, new_cve_tuples, update_advisory=update_advisory
             )
+            from apollo.rpmworker.rh_matcher_activities import (
+                sync_clone_cves_from_redhat,
+            )
+            await sync_clone_cves_from_redhat(advisory)
 
             # Handle Bugzilla tickets
             logger.info(f"Processing Bugzilla bugs for advisory {advisory.name}")
