@@ -973,6 +973,7 @@ async def process_repomd(
     mirror: SupportedProductsRhMirror,
     rpm_repomd: SupportedProductsRpmRepomd,
     advisories: list[RedHatAdvisory],
+    indexed_pkgs: Optional[list] = None,
 ):
     logger = Logger()
     all_pkgs = []
@@ -1044,6 +1045,8 @@ async def process_repomd(
             continue
         name = match.group(1)
 
+        pkg.set("mirror_id", str(mirror.id))
+        pkg.set("repo_name", rpm_repomd.repo_name)
         if cleaned not in raw_pkg_nvras:
             raw_pkg_nvras[cleaned] = []
         raw_pkg_nvras[cleaned].append(pkg)
@@ -1126,6 +1129,8 @@ async def process_repomd(
         else:
             logger.debug(f"No matching packages found for {advisory.name} inside of {mirror.name}")
 
+    if indexed_pkgs is not None:
+        indexed_pkgs.extend(all_pkgs)
     return ret
 
 

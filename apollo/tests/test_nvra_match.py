@@ -261,23 +261,39 @@ class TestLowestCompatiblePkgs(unittest.TestCase):
 
 class TestSelectClonePkgs(unittest.TestCase):
     def test_prefers_current_stream_over_older_vault(self):
-        """Yum repos have 48.rocky; vault 8.3 still has compose -31."""
+        """RH 4.el8_0 never shipped on Rocky; yum has 62, vault 8.3 still has 31."""
         vault = _pkg(
             "platform-python", "3.6.8", "31.el8", "x86_64", mirror_id="vault"
         )
         current = _pkg(
             "platform-python",
             "3.6.8",
-            "48.el8_7.rocky.0",
+            "62.el8_10.rocky.0",
             "x86_64",
             mirror_id="cur",
         )
         picked = select_clone_pkgs(
-            "platform-python-0:3.6.8-31.el8.x86_64.rpm",
+            "platform-python-0:3.6.8-4.el8_0.x86_64.rpm",
             [vault, current],
             historical_mirror_ids={"vault"},
         )
         self.assertEqual(picked, [current])
+
+    def test_current_only_el8_0_does_not_jump_without_vault(self):
+        """Daily catalog (no vault) must not rewrite an el8_0 RHBA to el8_10."""
+        current = _pkg(
+            "platform-python",
+            "3.6.8",
+            "62.el8_10.rocky.0",
+            "x86_64",
+            mirror_id="cur",
+        )
+        picked = select_clone_pkgs(
+            "platform-python-0:3.6.8-4.el8_0.x86_64.rpm",
+            [current],
+            historical_mirror_ids=set(),
+        )
+        self.assertEqual(picked, [])
 
     def test_vault_when_current_jumps_version(self):
         vault = _pkg(

@@ -101,8 +101,8 @@ def _pkg_name_arch(pkg: ET.Element) -> tuple[str, str] | None:
     return (name_el.text, arch_el.text)
 
 
-def _pkg_satisfies_rh(rh_nevra: str, pkg: ET.Element) -> bool:
-    """Dist-major, same version, EVR >=, and no forbidden point-release jump."""
+def _pkg_base_ok(rh_nevra: str, pkg: ET.Element) -> bool:
+    """Dist-major, same upstream version, Rocky EVR >= RH. No point-release pin."""
     try:
         adv = parse_nevra(rh_nevra)
     except ValueError:
@@ -114,22 +114,46 @@ def _pkg_satisfies_rh(rh_nevra: str, pkg: ET.Element) -> bool:
         return False
     if evr[1] != adv["version"]:
         return False
-    if not _evr_alias_point_release_ok(adv["release"], evr[2]):
-        return False
     return evr_gte(
         evr[0], evr[1], evr[2],
         adv["epoch"], adv["version"], adv["release"],
     )
 
 
-def _lowest_per_name_arch(
-    rh_nevra: str,
-    pkgs: list[ET.Element],
-) -> list[ET.Element]:
+def _pkg_satisfies_rh(rh_nevra: str, pkg: ET.Element) -> bool:
+    """Dist-major, same version, EVR >=, and no forbidden point-release jump."""
+    if not _pkg_base_ok(rh_nevra, pkg):
+        return False
+    try:
+        adv = parse_nevra(rh_nevra)
+    except ValueError:
+        return False
+    evr = _pkg_evr(pkg)
+    if evr is None:
+        return False
+    return _evr_alias_point_release_ok(adv["release"], evr[2])
+
+
+def _pkg_stripped_matches_rh(rh_nevra: str, pkg: ET.Element) -> bool:
+    """True when Rocky's dist-stripped release is the RH NVR (or a .rocky rebuild)."""
+    try:
+        adv = parse_nevra(rh_nevra)
+    except ValueError:
+        return False
+    evr = _pkg_evr(pkg)
+    if evr is None:
+        return False
+    rh_stripped = _release_without_dist(adv["release"])
+    rocky_stripped = _release_without_dist(evr[2])
+    if rocky_stripped == rh_stripped:
+        return True
+    return rocky_stripped.startswith(rh_stripped + ".")
+
+
+def _lowest_among(pkgs: list[ET.Element]) -> list[ET.Element]:
+    """One package per (name, arch): lowest EVR. Caller already filtered."""
     best: dict[tuple[str, str], tuple[tuple[str, str, str], ET.Element]] = {}
     for pkg in pkgs:
-        if not _pkg_satisfies_rh(rh_nevra, pkg):
-            continue
         evr = _pkg_evr(pkg)
         key = _pkg_name_arch(pkg)
         if evr is None or key is None:
@@ -140,6 +164,15 @@ def _lowest_per_name_arch(
         ) < 0:
             best[key] = (evr, pkg)
     return [item[1] for item in best.values()]
+
+
+def _lowest_per_name_arch(
+    rh_nevra: str,
+    pkgs: list[ET.Element],
+) -> list[ET.Element]:
+    return _lowest_among(
+        [pkg for pkg in pkgs if _pkg_satisfies_rh(rh_nevra, pkg)]
+    )
 
 
 def lowest_compatible_pkgs(
@@ -160,21 +193,36 @@ def select_clone_pkgs(
     pkgs: list[ET.Element],
     historical_mirror_ids: set[str] | None = None,
 ) -> list[ET.Element]:
-    """Prefer current-stream hits; vault only when current cannot satisfy.
+    """Prefer current-stream hits; vault only when current would jump NVR.
 
     Combining vault+current and taking the global lowest cloned 2019
     RLBAs to compose NEVRAs RelEng never published (python3 ``-31.el8``
-    vs repo ``-48.el8_7.rocky.0``). Current-stream is ignored when it
-    would jump upstream version or point-release.
+    vs repo ``-62.el8_10.rocky.0``).
+
+    If vault still has the RH stripped NVR (kernel ``55.el10_0``, openssl
+    ``14``), do not take a later current-stream NVR (``211.el10_2``,
+    ``17``). If Rocky never shipped that stripped NVR (RH ``4.el8_0``,
+    vault ``31.el8``), current-stream EVR>= is the yum-safe clone.
+    Current-only (no vault in the pool) still applies the point-release
+    pin so daily catalog cannot attach kernel ``211`` to an ``el10_0`` RHSA.
     """
-    ok = [pkg for pkg in pkgs if _pkg_satisfies_rh(rh_nevra, pkg)]
+    ok = [pkg for pkg in pkgs if _pkg_base_ok(rh_nevra, pkg)]
     if not ok:
         return []
     hist = historical_mirror_ids or set()
     current = [
         pkg for pkg in ok if (pkg.get("mirror_id") or "") not in hist
     ]
-    return _lowest_per_name_arch(rh_nevra, current if current else ok)
+    vault = [pkg for pkg in ok if (pkg.get("mirror_id") or "") in hist]
+    stripped = [pkg for pkg in ok if _pkg_stripped_matches_rh(rh_nevra, pkg)]
+    if stripped:
+        cur_stripped = [
+            pkg for pkg in stripped if (pkg.get("mirror_id") or "") not in hist
+        ]
+        return _lowest_among(cur_stripped or stripped)
+    if vault:
+        return _lowest_among(current or vault)
+    return _lowest_per_name_arch(rh_nevra, current)
 
 
 def _pkg_evr(pkg: ET.Element) -> tuple[str, str, str] | None:
