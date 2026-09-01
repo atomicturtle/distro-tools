@@ -974,6 +974,7 @@ async def process_repomd(
     rpm_repomd: SupportedProductsRpmRepomd,
     advisories: list[RedHatAdvisory],
     indexed_pkgs: Optional[list] = None,
+    wanted_pkg_names: Optional[set] = None,
 ):
     logger = Logger()
     all_pkgs = []
@@ -1130,7 +1131,16 @@ async def process_repomd(
             logger.debug(f"No matching packages found for {advisory.name} inside of {mirror.name}")
 
     if indexed_pkgs is not None:
-        indexed_pkgs.extend(all_pkgs)
+        if wanted_pkg_names:
+            for pkg in all_pkgs:
+                name_el = pkg.find(
+                    "{http://linux.duke.edu/metadata/common}name"
+                )
+                if name_el is None or name_el.text not in wanted_pkg_names:
+                    continue
+                indexed_pkgs.append(pkg)
+        else:
+            indexed_pkgs.extend(all_pkgs)
     return ret
 
 
