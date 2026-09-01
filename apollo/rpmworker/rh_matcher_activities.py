@@ -858,25 +858,28 @@ async def clone_advisory(
                     rh_modules_by_cleaned,
                 )
 
-                for mirror in mirrors:
-                    if pkg.attrib["mirror_id"] != str(mirror.id):
-                        continue
-                    new_pkgs.append(
-                        NewPackage(
-                            nevra=nevra,
-                            checksum=checksum,
-                            checksum_type=checksum_type,
-                            module_context=module_context,
-                            module_name=module_name,
-                            module_stream=module_stream,
-                            module_version=module_version,
-                            repo_name=pkg.attrib["repo_name"],
-                            package_name=package_name,
-                            mirror_id=mirror.id,
-                            supported_product_id=mirror.supported_product_id,
-                            product_name=stream_product_name(mirror),
-                        )
+                mirror_by_id = {str(item.id): item for item in mirrors}
+                for item in getattr(product, "rh_mirrors", None) or []:
+                    mirror_by_id.setdefault(str(item.id), item)
+                mirror = mirror_by_id.get(pkg.attrib.get("mirror_id"))
+                if mirror is None:
+                    continue
+                new_pkgs.append(
+                    NewPackage(
+                        nevra=nevra,
+                        checksum=checksum,
+                        checksum_type=checksum_type,
+                        module_context=module_context,
+                        module_name=module_name,
+                        module_stream=module_stream,
+                        module_version=module_version,
+                        repo_name=pkg.attrib["repo_name"],
+                        package_name=package_name,
+                        mirror_id=mirror.id,
+                        supported_product_id=mirror.supported_product_id,
+                        product_name=stream_product_name(mirror),
                     )
+                )
 
         if not new_pkgs:
             if existing_advisory:
