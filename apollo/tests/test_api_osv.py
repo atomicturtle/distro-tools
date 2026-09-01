@@ -37,12 +37,20 @@ class MockPackage:
         repo_name="BaseOS",
         supported_product=None,
         supported_products_rh_mirror=None,
+        module_name=None,
+        module_stream=None,
+        module_version=None,
+        module_context=None,
     ):
         self.nevra = nevra
         self.product_name = product_name
         self.repo_name = repo_name
         self.supported_product = supported_product or MockSupportedProduct()
         self.supported_products_rh_mirror = supported_products_rh_mirror
+        self.module_name = module_name
+        self.module_stream = module_stream
+        self.module_version = module_version
+        self.module_context = module_context
 
 
 class MockCVE:
@@ -288,6 +296,117 @@ class TestOSVCVEFiltering(unittest.TestCase):
 
         fixed_version = result.affected[0].ranges[0].events[1].fixed
         self.assertEqual(fixed_version, "0:252-38.el9_5")
+
+    def test_non_modular_purl_has_no_rpmmod(self):
+        packages = [
+            MockPackage(
+                nevra="bash-0:5.1.8-9.el9.x86_64",
+                supported_products_rh_mirror=MockSupportedProductsRhMirror(9),
+            ),
+        ]
+        result = to_osv_advisory(
+            "https://errata.rockylinux.org",
+            MockAdvisory(packages=packages, cves=[MockCVE()]),
+        )
+        self.assertEqual(len(result.affected), 1)
+        self.assertNotIn("rpmmod=", result.affected[0].package.purl)
+
+    def test_modular_purl_includes_rpmmod(self):
+        packages = [
+            MockPackage(
+                nevra="nodejs-1:16.20.2-4.module+el8.9.0+21536+8fdee1fb.x86_64",
+                product_name="Rocky Linux 8 x86_64",
+                repo_name="AppStream",
+                supported_products_rh_mirror=MockSupportedProductsRhMirror(8),
+                module_name="nodejs",
+                module_stream="16",
+                module_version="8090020240312140000",
+                module_context="d63f516d",
+            ),
+        ]
+        result = to_osv_advisory(
+            "https://errata.rockylinux.org",
+            MockAdvisory(packages=packages, cves=[MockCVE()]),
+        )
+        self.assertEqual(len(result.affected), 1)
+        self.assertIn(
+            "rpmmod=nodejs:16:8090020240312140000:d63f516d",
+            result.affected[0].package.purl,
+        )
+
+    def test_nodejs_streams_are_distinct_osv_rows(self):
+        mirror = MockSupportedProductsRhMirror(8)
+        packages = [
+            MockPackage(
+                nevra="nodejs-1:16.20.2-4.module+el8.9.0+21536+aaa.x86_64",
+                product_name="Rocky Linux 8 x86_64",
+                repo_name="AppStream",
+                supported_products_rh_mirror=mirror,
+                module_name="nodejs",
+                module_stream="16",
+                module_version="8090020240312140000",
+                module_context="aaaa",
+            ),
+            MockPackage(
+                nevra="nodejs-1:18.19.1-1.module+el8.9.0+21536+bbb.x86_64",
+                product_name="Rocky Linux 8 x86_64",
+                repo_name="AppStream",
+                supported_products_rh_mirror=mirror,
+                module_name="nodejs",
+                module_stream="18",
+                module_version="8090020240312140001",
+                module_context="bbbb",
+            ),
+        ]
+        result = to_osv_advisory(
+            "https://errata.rockylinux.org",
+            MockAdvisory(packages=packages, cves=[MockCVE()]),
+        )
+        self.assertEqual(len(result.affected), 2)
+        rpmmods = sorted(
+            a.package.purl.split("rpmmod=", 1)[1]
+            for a in result.affected
+            if a.package.purl and "rpmmod=" in a.package.purl
+        )
+        self.assertEqual(
+            rpmmods,
+            [
+                "nodejs:16:8090020240312140000:aaaa",
+                "nodejs:18:8090020240312140001:bbbb",
+            ],
+        )
+
+    def test_same_nevra_different_streams_not_collapsed(self):
+        mirror = MockSupportedProductsRhMirror(8)
+        nevra = "nodejs-nodemon-0:3.0.1-1.module+el8.9.0+19741+03a9aaff.noarch"
+        packages = [
+            MockPackage(
+                nevra=nevra,
+                product_name="Rocky Linux 8 x86_64",
+                repo_name="AppStream",
+                supported_products_rh_mirror=mirror,
+                module_name="nodejs",
+                module_stream="16",
+            ),
+            MockPackage(
+                nevra=nevra,
+                product_name="Rocky Linux 8 x86_64",
+                repo_name="AppStream",
+                supported_products_rh_mirror=mirror,
+                module_name="nodejs",
+                module_stream="18",
+            ),
+        ]
+        result = to_osv_advisory(
+            "https://errata.rockylinux.org",
+            MockAdvisory(packages=packages, cves=[MockCVE()]),
+        )
+        self.assertEqual(len(result.affected), 2)
+        rpmmods = sorted(
+            a.package.purl.split("rpmmod=", 1)[1]
+            for a in result.affected
+        )
+        self.assertEqual(rpmmods, ["nodejs:16", "nodejs:18"])
 
 
 class TestOSVAttribution(unittest.TestCase):

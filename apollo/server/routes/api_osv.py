@@ -1,4 +1,5 @@
 import datetime
+import urllib.parse
 
 from typing import TypeVar, Generic, Optional
 
@@ -109,6 +110,27 @@ class OSVAdvisory(BaseModel):
     database_specific: Optional[OSVDatabaseSpecific]
 
 
+def _rpmmod_from_package(pkg) -> Optional[str]:
+    """RH PURL ``rpmmod`` qualifier: ``name:stream[:version:context]``."""
+    name = getattr(pkg, "module_name", None)
+    stream = getattr(pkg, "module_stream", None)
+    if not name or not stream:
+        return None
+    version = getattr(pkg, "module_version", None)
+    context = getattr(pkg, "module_context", None)
+    if version and context:
+        return f"{name}:{stream}:{version}:{context}"
+    return f"{name}:{stream}"
+
+
+def _osv_affected_key(pkg) -> tuple:
+    return (
+        pkg.nevra,
+        getattr(pkg, "module_name", None) or "",
+        getattr(pkg, "module_stream", None) or "",
+    )
+
+
 def to_osv_advisory(ui_url: str, advisory: Advisory) -> OSVAdvisory:
     affected_pkgs = []
 
@@ -149,9 +171,9 @@ def to_osv_advisory(ui_url: str, advisory: Advisory) -> OSVAdvisory:
                     # Skip source RPMs; OSV affected lists binary subpackages (Red Hat parity).
                     if nevra.group(5) == "src":
                         continue
-                    if x.nevra in processed_nvra:
+                    if _osv_affected_key(x) in processed_nvra:
                         continue
-                    processed_nvra[x.nevra] = True
+                    processed_nvra[_osv_affected_key(x)] = True
 
                     epoch = nevra.group(2)
                     ver_rel = f"{epoch}:{nevra.group(3)}-{nevra.group(4)}"
@@ -165,6 +187,9 @@ def to_osv_advisory(ui_url: str, advisory: Advisory) -> OSVAdvisory:
                         )
 
                     purl = f"pkg:rpm/{slugified}/{pkg_name}?distro={slugified_distro}&epoch={epoch}"
+                    rpmmod = _rpmmod_from_package(x)
+                    if rpmmod:
+                        purl = f"{purl}&rpmmod={urllib.parse.quote(rpmmod, safe=':')}"
 
                     affected = OSVAffected(
                         package=OSVPackage(
