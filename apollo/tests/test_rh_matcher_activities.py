@@ -24,9 +24,13 @@ from apollo.rpmworker.rh_matcher_activities import (
     create_or_update_advisory_packages,
     NewPackage,
     process_repomd,
+    repo_arch_for_mirror,
     rh_advisory_matches_major,
     stream_product_name,
     _is_historical_mirror,
+    _nvra_with_arch,
+    _repomd_belongs_to_mirror,
+    _repo_search_cleaned,
 )
 
 NS = "http://linux.duke.edu/metadata/common"
@@ -565,6 +569,21 @@ class TestStreamProductName(unittest.TestCase):
         mirror.match_minor_version = None
         mirror.match_arch = "x86_64"
         self.assertEqual(stream_product_name(mirror), "Rocky Linux 10 riscv64")
+        self.assertEqual(repo_arch_for_mirror(mirror), "riscv64")
+
+    def test_repo_arch_follows_name_not_match_arch(self):
+        mirror = _make_mirror(name="Rocky Linux 10 x86_64")
+        mirror.match_major_version = 10
+        mirror.match_minor_version = None
+        self.assertEqual(repo_arch_for_mirror(mirror), "x86_64")
+
+    def test_vault_riscv64_repo_arch(self):
+        mirror = _make_mirror(name="Rocky Linux 10 riscv64 [vault 10.0]")
+        mirror.match_major_version = 10
+        mirror.match_minor_version = 0
+        mirror.match_arch = "x86_64"
+        self.assertEqual(stream_product_name(mirror), "Rocky Linux 10 riscv64")
+        self.assertEqual(repo_arch_for_mirror(mirror), "riscv64")
 
     def test_zero_minor_collapsed(self):
         mirror = _make_mirror(name="Rocky Linux 10.0 riscv64")
@@ -926,6 +945,138 @@ class TestProcessRepomdSkippedUrls(unittest.TestCase):
         self.assertEqual(bash_names, {"bash"})
         self.assertEqual(ff_names, {"firefox"})
 
+    def test_x86_64_rhsa_matches_riscv64_repo(self):
+        """RHEL has no riscv64 product; donor x86_64 RH NEVRAs clone .riscv64."""
+        mirror = _make_mirror(mirror_id=2, name="Rocky Linux 10 riscv64")
+        mirror.match_arch = "x86_64"
+        mirror.match_major_version = 10
+        mirror.match_minor_version = None
+        repo_pkgs = [
+            _make_pkg_element("bash", "5.2.26", "6.el10_0", "riscv64"),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2026:0001",
+            ["bash-0:5.2.26-6.el10_0.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(mirror, _make_rpm_repomd(), [advisory])
+            )
+        self.assertIn("RHSA-2026:0001", result)
+        arches = {
+            pkg.find(f"{{{NS}}}arch").text
+            for pkg in result["RHSA-2026:0001"]["packages"][0]
+        }
+        self.assertEqual(arches, {"riscv64"})
+
+    def test_x86_64_rhsa_matches_riscv64_rocky_suffix(self):
+        mirror = _make_mirror(mirror_id=2, name="Rocky Linux 10 riscv64")
+        mirror.match_arch = "x86_64"
+        mirror.match_major_version = 10
+        mirror.match_minor_version = None
+        repo_pkgs = [
+            _make_pkg_element(
+                "openssh", "9.9p1", "7.el10_0.rocky.0.1", "riscv64"
+            ),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2026:0002",
+            ["openssh-0:9.9p1-7.el10_0.x86_64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(mirror, _make_rpm_repomd(), [advisory])
+            )
+        self.assertIn("RHSA-2026:0002", result)
+
+    def test_aarch64_rhsa_does_not_rewrite_onto_riscv64(self):
+        mirror = _make_mirror(mirror_id=2, name="Rocky Linux 10 riscv64")
+        mirror.match_arch = "x86_64"
+        mirror.match_major_version = 10
+        mirror.match_minor_version = None
+        repo_pkgs = [
+            _make_pkg_element("bash", "5.2.26", "6.el10_0", "riscv64"),
+        ]
+        advisory = _make_advisory(
+            "RHSA-2026:0001",
+            ["bash-0:5.2.26-6.el10_0.aarch64.rpm"],
+        )
+        fake_dl, fake_data = _mock_repomd_downloads(repo_pkgs)
+        with patch.object(repomd, "download_xml", side_effect=fake_dl), \
+             patch.object(repomd, "get_data_from_repomd", side_effect=fake_data):
+            result = self._run(
+                process_repomd(mirror, _make_rpm_repomd(), [advisory])
+            )
+        self.assertNotIn("RHSA-2026:0001", result)
+
+
+class TestRepoArchHelpers(unittest.TestCase):
+    def test_nvra_with_arch_rewrites_cleaned_and_rpm(self):
+        self.assertEqual(
+            _nvra_with_arch("bash-5.2.26-6.x86_64", "riscv64"),
+            "bash-5.2.26-6.riscv64",
+        )
+        self.assertEqual(
+            _nvra_with_arch("bash-0:5.2.26-6.el10_0.x86_64.rpm", "riscv64"),
+            "bash-0:5.2.26-6.el10_0.riscv64.rpm",
+        )
+        self.assertEqual(
+            _nvra_with_arch("module.bash-5.2.26-6.x86_64", "riscv64"),
+            "module.bash-5.2.26-6.riscv64",
+        )
+
+    def test_repo_search_cleaned_rewrites_donor_only(self):
+        mirror = _make_mirror(name="Rocky Linux 10 riscv64")
+        mirror.match_arch = "x86_64"
+        mirror.match_major_version = 10
+        mirror.match_minor_version = None
+        self.assertEqual(
+            _repo_search_cleaned(mirror, "bash-5.2.26-6.x86_64", "x86_64"),
+            "bash-5.2.26-6.riscv64",
+        )
+        self.assertEqual(
+            _repo_search_cleaned(mirror, "bash-5.2.26-6.noarch", "noarch"),
+            "bash-5.2.26-6.noarch",
+        )
+        x86 = _make_mirror(name="Rocky Linux 10 x86_64")
+        x86.match_major_version = 10
+        x86.match_minor_version = None
+        self.assertEqual(
+            _repo_search_cleaned(x86, "bash-5.2.26-6.x86_64", "x86_64"),
+            "bash-5.2.26-6.x86_64",
+        )
+
+    def test_repomd_belongs_accepts_lied_stored_arch(self):
+        mirror = _make_mirror(name="Rocky Linux 10 riscv64")
+        mirror.match_arch = "x86_64"
+        mirror.match_major_version = 10
+        mirror.match_minor_version = None
+        lied = _make_rpm_repomd()
+        lied.arch = "x86_64"
+        lied.url = (
+            "https://dl.rockylinux.org/pub/rocky/10/BaseOS/riscv64/"
+            "os/repodata/repomd.xml"
+        )
+        self.assertTrue(_repomd_belongs_to_mirror(mirror, lied))
+        truthful = _make_rpm_repomd()
+        truthful.arch = "riscv64"
+        truthful.url = lied.url
+        self.assertTrue(_repomd_belongs_to_mirror(mirror, truthful))
+
+    def test_repomd_belongs_rejects_other_arch_row(self):
+        mirror = _make_mirror(name="Rocky Linux 9 x86_64")
+        other = _make_rpm_repomd()
+        other.arch = "aarch64"
+        other.url = (
+            "https://dl.rockylinux.org/pub/rocky/9/BaseOS/aarch64/"
+            "os/repodata/repomd.xml"
+        )
+        self.assertFalse(_repomd_belongs_to_mirror(mirror, other))
+
 
 class TestAffectedProductRowsFromPackages(unittest.TestCase):
     def test_rows_follow_cloned_nevras_not_walked_majors(self):
@@ -999,6 +1150,30 @@ class TestAffectedProductRowsFromPackages(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["arch"], "x86_64")
         self.assertEqual(rows[0]["name"], "Rocky Linux 10 x86_64")
+
+    def test_src_only_riscv64_uses_stream_arch(self):
+        pkgs = [
+            _new_pkg(
+                "firefox-0:128.12.0-1.el10_0.src.rpm",
+                product_name="Rocky Linux 10 riscv64",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(16, "Rocky Linux", pkgs)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["arch"], "riscv64")
+        self.assertEqual(rows[0]["name"], "Rocky Linux 10 riscv64")
+
+    def test_riscv64_binary_stamps_riscv64_arch(self):
+        pkgs = [
+            _new_pkg(
+                "bash-0:5.2.26-6.el10_0.riscv64.rpm",
+                product_name="Rocky Linux 10 riscv64",
+            ),
+        ]
+        rows = affected_product_rows_from_packages(17, "Rocky Linux", pkgs)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["arch"], "riscv64")
+        self.assertEqual(rows[0]["name"], "Rocky Linux 10 riscv64")
 
     def test_noarch_uses_stream_label_arch(self):
         pkgs = [

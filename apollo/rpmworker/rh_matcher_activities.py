@@ -139,6 +139,63 @@ SHIP_PRODUCT_ARCHES = {
 }
 
 
+def _arch_token_from_product_name(product_name: str) -> Optional[str]:
+    if not product_name:
+        return None
+    token = product_name.rsplit(" ", 1)[-1]
+    if token in SHIP_PRODUCT_ARCHES:
+        return token
+    return None
+
+
+def repo_arch_for_mirror(mirror) -> str:
+    """Rocky tree arch. Distinct from ``match_arch`` (RH CSAF lookup key).
+
+    RHEL has no riscv64 product, so EL10 riscv64 mirrors keep
+    ``match_arch=x86_64`` and are named ``Rocky Linux 10 riscv64``.
+    """
+    name = stream_product_name(mirror)
+    token = _arch_token_from_product_name(name)
+    if token:
+        return token
+    return getattr(mirror, "match_arch", None) or "x86_64"
+
+
+def _nvra_with_arch(nvra: str, arch: str) -> str:
+    """Replace the arch token on a cleaned NVRA or NEVRA string."""
+    rpm = nvra.endswith(".rpm")
+    body = nvra[:-4] if rpm else nvra
+    if "." not in body:
+        return nvra
+    rewritten = f"{body.rsplit('.', 1)[0]}.{arch}"
+    return f"{rewritten}.rpm" if rpm else rewritten
+
+
+def _repo_search_cleaned(mirror, cleaned: str, pkg_arch: str) -> str:
+    """Look up Rocky XML by repo arch when RH only published the donor arch."""
+    repo_arch = repo_arch_for_mirror(mirror)
+    match_arch = getattr(mirror, "match_arch", None)
+    if (
+        pkg_arch
+        and pkg_arch == match_arch
+        and repo_arch != pkg_arch
+        and repo_arch in SHIP_PRODUCT_ARCHES
+        and pkg_arch not in ("noarch", "src")
+    ):
+        return _nvra_with_arch(cleaned, repo_arch)
+    return cleaned
+
+
+def _repomd_belongs_to_mirror(mirror, rpm_repomd) -> bool:
+    """Accept stored arch as repo arch, donor ``match_arch``, or URL tree."""
+    repo_arch = repo_arch_for_mirror(mirror)
+    stored = getattr(rpm_repomd, "arch", None)
+    if stored == repo_arch or stored == getattr(mirror, "match_arch", None):
+        return True
+    url = getattr(rpm_repomd, "url", None) or ""
+    return bool(repo_arch and f"/{repo_arch}/" in url)
+
+
 def _product_arch_for_package(parsed_arch: str, product_name: str) -> Optional[str]:
     """Arch yum/updateinfo join on. ``src`` is not a repo arch.
 
@@ -147,11 +204,8 @@ def _product_arch_for_package(parsed_arch: str, product_name: str) -> Optional[s
     """
     if parsed_arch in SHIP_PRODUCT_ARCHES:
         return parsed_arch
-    if parsed_arch == "noarch" and product_name:
-        token = product_name.rsplit(" ", 1)[-1]
-        if token in SHIP_PRODUCT_ARCHES:
-            return token
-        return "x86_64"
+    if parsed_arch == "noarch":
+        return _arch_token_from_product_name(product_name) or "x86_64"
     return None
 
 
@@ -200,7 +254,8 @@ def affected_product_rows_from_packages(
         }
     if not rows:
         for pkg, major in src_fallback:
-            arch = "x86_64"
+            product_name = getattr(pkg, "product_name", None) or ""
+            arch = _arch_token_from_product_name(product_name) or "x86_64"
             name = f"{variant} {major} {arch}"
             key = (variant, name, major, arch)
             if key in rows:
@@ -505,7 +560,7 @@ async def create_or_update_advisory_affected_product(
                     "name": stream_product_name(mirror),
                     "major_version": mirror.match_major_version,
                     "minor_version": mirror.match_minor_version,
-                    "arch": mirror.match_arch,
+                    "arch": repo_arch_for_mirror(mirror),
                     "supported_product_id": mirror.supported_product_id,
                 }
             )
@@ -672,12 +727,13 @@ async def clone_advisory(
     logger = Logger()
     logger.info("Cloning advisory %s to %s", advisory.name, product.name)
 
-    acceptable_arches = list({x.match_arch for x in mirrors})
-    acceptable_arches.extend(["src", "noarch"])
+    acceptable_arches = set()
     for mirror in mirrors:
-        if mirror.match_arch == "x86_64":
-            acceptable_arches.append("i686")
-            break
+        acceptable_arches.add(mirror.match_arch)
+        acceptable_arches.add(repo_arch_for_mirror(mirror))
+    acceptable_arches.update(["src", "noarch"])
+    if any(mirror.match_arch == "x86_64" for mirror in mirrors):
+        acceptable_arches.add("i686")
 
     # Generate dictionary of clean advisory nvras
     clean_advisory_nvras = {}
@@ -1103,19 +1159,22 @@ async def process_repomd(
             lookup_name = (
                 cleaned_match.group(1) if cleaned_match else results["name"]
             )
-            if cleaned not in clean_advisory_nvras:
-                exact_pkgs = raw_pkg_nvras.get(cleaned, [])
+            search_cleaned = _repo_search_cleaned(
+                mirror, cleaned, results["arch"]
+            )
+            if search_cleaned not in clean_advisory_nvras:
+                exact_pkgs = raw_pkg_nvras.get(search_cleaned, [])
                 if not lowest_compatible_pkgs(advisory_pkg.nevra, exact_pkgs):
                     # Prefix (.rocky) or EVR >= when Rocky already ships newer
                     alias = find_nvra_alias(
-                        cleaned,
+                        search_cleaned,
                         pkg_name_map.get(lookup_name, []),
                         advisory_nevra=advisory_pkg.nevra,
                         raw_pkg_nvras=raw_pkg_nvras,
                     )
                     if alias:
-                        nvra_alias[cleaned] = alias
-                clean_advisory_nvras[cleaned] = advisory_pkg.nevra
+                        nvra_alias[search_cleaned] = alias
+                clean_advisory_nvras[search_cleaned] = advisory_pkg.nevra
 
         if not clean_advisory_nvras:
             logger.debug(f"No cleaned packages for {advisory.name}, moving on.")
@@ -1213,8 +1272,13 @@ async def match_rh_repos(params) -> None:
         logger.info("Processing mirror: %s", mirror.name)
         advisories = await get_matching_rh_advisories(mirror)
         for rpm_repomd in mirror.rpm_repomds:
-            if rpm_repomd.arch != mirror.match_arch:
-                logger.debug(f"Skipping due to {rpm_repomd.arch} != {mirror.match_arch}")
+            if not _repomd_belongs_to_mirror(mirror, rpm_repomd):
+                logger.debug(
+                    "Skipping due to %s not belonging to %s (match_arch=%s)",
+                    rpm_repomd.arch,
+                    mirror.name,
+                    mirror.match_arch,
+                )
                 continue
             advisory_map = await process_repomd(mirror, rpm_repomd, advisories)
             if advisory_map:

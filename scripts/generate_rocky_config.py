@@ -28,6 +28,12 @@ from bs4 import BeautifulSoup
 # Constants
 UNKNOWN_VALUE = "unknown"
 
+# RHEL CSAF has no riscv64 product. match_arch is the RH lookup key;
+# repository URLs still use the Rocky tree arch.
+RH_MATCH_ARCH = {
+    "riscv64": "x86_64",
+}
+
 
 class Architecture(str, Enum):
     """Supported system architectures for Rocky Linux repositories."""
@@ -651,7 +657,7 @@ def build_mirror_config(
             "match_variant": "Red Hat Enterprise Linux",
             "match_major_version": major_version,
             "match_minor_version": minor_version,
-            "match_arch": arch,
+            "match_arch": RH_MATCH_ARCH.get(arch, arch),
         },
         "repositories": [],
     }
