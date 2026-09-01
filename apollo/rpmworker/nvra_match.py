@@ -5,12 +5,11 @@ Matching order:
 1. Exact cleaned NVRA (handled by callers via dict lookup) **plus**
    ``lowest_compatible_pkgs``. Cleaning strips ``.el10_0`` / ``.el8_10``
    and ``.module+el8.Y.0+build``, so several Rocky rebuilds share a key.
-   Callers must keep **one** XML package per (name, arch[, module stream]):
-   the lowest EVR that is still >= the RH fixed EVR on the same dist major.
-   Same-stream rebuilds (python2-attrs ``el8.5`` vs ``el8.10``) collapse to
-   the lowest EVR. Distinct streams stamped on the XML element (nodejs 16
-   vs 20) stay separate — otherwise a default-stream walk keeps one nodemon
-   and drops the rest.
+   Callers must keep **one** XML package per (name, arch): the lowest EVR
+   that is still >= the RH fixed EVR on the same dist major. Attaching
+   every module stream makes clone fidelity report the newest (el8.10)
+   even when vault still has the shipped el8.5 rebuild. RH vs Rocky
+   ``.module+`` build IDs are not comparable; EVR >= strips that suffix.
    Point-release tags on the same major may differ: Rocky ships RH
    ``el8_6`` openssl as ``el8_10`` (RLSA-2024:7848).
 2. Prefix match (Rocky .rocky.* rebuild suffix on the same NVR), with a
@@ -117,8 +116,8 @@ def _pkg_base_ok(rh_nevra: str, pkg: ET.Element) -> bool:
     if evr[1] != adv["version"]:
         return False
     return evr_gte(
-        evr[0], evr[1], evr[2],
-        adv["epoch"], adv["version"], adv["release"],
+        evr[0], evr[1], _evr_release_for_rh_compare(evr[2]),
+        adv["epoch"], adv["version"], _evr_release_for_rh_compare(adv["release"]),
     )
 
 
@@ -152,23 +151,24 @@ def _pkg_stripped_matches_rh(rh_nevra: str, pkg: ET.Element) -> bool:
     return rocky_stripped.startswith(rh_stripped + ".")
 
 
-def _pkg_stream(pkg: ET.Element) -> str:
-    return pkg.get("module_stream") or ""
+def _evr_release_for_rh_compare(release: str) -> str:
+    """Strip ``.module+…`` so RHEL vs Rocky module build IDs are not compared.
+
+    ``nodejs-16.20.2-4.module+el8.9.0+21536+…`` (RHEL) vs Rocky
+    ``…+1666+…`` is the same NVR; RPM label_compare treats 1666 < 21536
+    and would skip the vault RPM that actually ships the fix.
+    """
+    return _MODULE_DIST_RE.sub("", release)
 
 
 def _lowest_among(pkgs: list[ET.Element]) -> list[ET.Element]:
-    """One package per (name, arch, stream): lowest EVR. Caller already filtered.
-
-    ``module_stream`` is optional. Unstamped packages share the empty stream
-    and still collapse same-name rebuilds (python2-attrs el8.5 vs el8.10).
-    """
-    best: dict[tuple[str, str, str], tuple[tuple[str, str, str], ET.Element]] = {}
+    """One package per (name, arch): lowest EVR. Caller already filtered."""
+    best: dict[tuple[str, str], tuple[tuple[str, str, str], ET.Element]] = {}
     for pkg in pkgs:
         evr = _pkg_evr(pkg)
-        name_arch = _pkg_name_arch(pkg)
-        if evr is None or name_arch is None:
+        key = _pkg_name_arch(pkg)
+        if evr is None or key is None:
             continue
-        key = (name_arch[0], name_arch[1], _pkg_stream(pkg))
         prev = best.get(key)
         if prev is None or label_compare(
             evr[0], evr[1], evr[2], prev[0][0], prev[0][1], prev[0][2]
@@ -190,12 +190,12 @@ def lowest_compatible_pkgs(
     rh_nevra: str,
     pkgs: list[ET.Element],
 ) -> list[ET.Element]:
-    """One Rocky XML package per (name, arch[, stream]): lowest EVR >= RH.
+    """One Rocky XML package per (name, arch): lowest EVR >= RH.
 
     Cleaning collapses ``python2-attrs-17.4.0-10.module+el8.5.0+…`` and
     ``…module+el8.10.0+…`` onto the same key. Dist-major compatibility
     alone would attach both; fidelity then reports the newest rebuild.
-    Stamped ``module_stream`` keeps nodejs 16 and 20 as separate rows.
+    RH vs Rocky ``.module+`` build IDs are stripped before EVR >=.
     """
     return _lowest_per_name_arch(rh_nevra, pkgs)
 
@@ -204,6 +204,7 @@ def select_clone_pkgs(
     rh_nevra: str,
     pkgs: list[ET.Element],
     historical_mirror_ids: set[str] | None = None,
+    rh_module_stream: str | None = None,
 ) -> list[ET.Element]:
     """Prefer current-stream hits; vault only when current would jump NVR.
 
@@ -217,7 +218,17 @@ def select_clone_pkgs(
     vault ``31.el8``), current-stream EVR>= is the yum-safe clone.
     Current-only (no vault in the pool) still applies the point-release
     pin so daily catalog cannot attach kernel ``211`` to an ``el10_0`` RHSA.
+
+    When the RH package names a module stream and XML is stamped from
+    modules.yaml, keep that stream only (nodejs 16, not current 20).
     """
+    if rh_module_stream:
+        stream_pkgs = [
+            pkg for pkg in pkgs
+            if pkg.get("module_stream") == str(rh_module_stream)
+        ]
+        if stream_pkgs:
+            pkgs = stream_pkgs
     ok = [pkg for pkg in pkgs if _pkg_base_ok(rh_nevra, pkg)]
     if not ok:
         return []
@@ -308,8 +319,9 @@ def find_nvra_alias(
                     if not _dist_compatible(adv["release"], evr[2]):
                         continue
                     if not evr_gte(
-                        evr[0], evr[1], evr[2],
-                        adv["epoch"], adv["version"], adv["release"],
+                        evr[0], evr[1], _evr_release_for_rh_compare(evr[2]),
+                        adv["epoch"], adv["version"],
+                        _evr_release_for_rh_compare(adv["release"]),
                     ):
                         continue
         return pkg_nvra
@@ -339,7 +351,11 @@ def find_nvra_alias(
             continue
         if not _evr_alias_point_release_ok(adv["release"], rel):
             continue
-        if evr_gte(epoch, ver, rel, adv["epoch"], adv["version"], adv["release"]):
+        if evr_gte(
+            epoch, ver, _evr_release_for_rh_compare(rel),
+            adv["epoch"], adv["version"],
+            _evr_release_for_rh_compare(adv["release"]),
+        ):
             candidates.append((epoch, ver, rel, pkg_nvra))
 
     if not candidates:

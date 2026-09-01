@@ -922,8 +922,14 @@ async def clone_advisory(
                     pool.append(pkg)
             if not pool:
                 pool = list(pkg_nvras.get(cleaned_rh_nvra, []))
+            rh_stream = (rh_modules_by_cleaned.get(cleaned_rh_nvra) or {}).get(
+                "module_stream"
+            )
             pkgs_to_process = select_clone_pkgs(
-                rh_nevra, pool, historical_ids
+                rh_nevra,
+                pool,
+                historical_ids,
+                rh_module_stream=rh_stream,
             )
             if not pkgs_to_process:
                 continue

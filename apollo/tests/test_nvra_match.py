@@ -215,6 +215,20 @@ class TestLowestCompatiblePkgs(unittest.TestCase):
         )
         self.assertEqual(picked, [rocky])
 
+    def test_modular_evr_ignores_rh_vs_rocky_build_id(self):
+        rocky = _pkg(
+            "nodejs",
+            "16.20.2",
+            "4.module+el8.9.0+1666+930e28e8",
+            "x86_64",
+            epoch="1",
+        )
+        picked = lowest_compatible_pkgs(
+            "nodejs-1:16.20.2-4.module+el8.9.0+21536+8fdee1fb.x86_64.rpm",
+            [rocky],
+        )
+        self.assertEqual(picked, [rocky])
+
     def test_older_than_rh_skipped(self):
         older = _pkg("openssh", "8.7p1", "48.el9_7", "x86_64")
         picked = lowest_compatible_pkgs(
@@ -273,11 +287,12 @@ class TestLowestCompatiblePkgs(unittest.TestCase):
             "noarch",
         )
         n20.set("module_stream", "20")
-        picked = lowest_compatible_pkgs(
+        picked = select_clone_pkgs(
             "nodejs-nodemon-0:3.0.1-1.module+el8.9.0+1+aaa.noarch.rpm",
             [n16, n20],
+            rh_module_stream="16",
         )
-        self.assertEqual({p.get("module_stream") for p in picked}, {"16", "20"})
+        self.assertEqual([p.get("module_stream") for p in picked], ["16"])
 
     def test_same_stream_rebuilds_still_collapse(self):
         older = _pkg(
