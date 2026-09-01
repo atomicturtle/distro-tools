@@ -1138,6 +1138,15 @@ async def process_repomd(
                 )
                 if name_el is None or name_el.text not in wanted_pkg_names:
                     continue
+                if name_el.text.endswith("-debuginfo") or name_el.text.endswith(
+                    "-debugsource"
+                ):
+                    continue
+                arch_el = pkg.find(
+                    "{http://linux.duke.edu/metadata/common}arch"
+                )
+                if arch_el is not None and arch_el.text == "src":
+                    continue
                 indexed_pkgs.append(pkg)
         else:
             indexed_pkgs.extend(all_pkgs)
