@@ -26,6 +26,13 @@ def _normalize_module_nevra_key(nevra_key: str) -> str:
     return nevra_key.replace(".rocky", "")
 
 
+def _nevra_arch(nevra: str) -> Optional[str]:
+    try:
+        return parse_nevra(nevra)["arch"]
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
 def _lookup_module_pkgs(module_pkgs: dict, nevra_key: str):
     if nevra_key in module_pkgs:
         return module_pkgs[nevra_key]
@@ -255,7 +262,9 @@ async def create_or_update_advisory_packages(
     fields and refresh product_name on NEVRAs already present. Do not add or
     delete packages — an RLSA is a snapshot of what shipped.
     Repair (replace_packages): add missing NEVRAs and delete those not in the
-    new match set (vault + current lowest-EVR rematch).
+    new match set (vault + current lowest-EVR rematch). Only delete NEVRAs
+    whose arch appears in the new set so an x86_64-only walk cannot wipe
+    aarch64 / ppc64le / s390x packages the rematch never indexed.
     """
     logger = Logger()
     logger.info("Creating or updating advisory packages for %s", advisory.name)
@@ -327,9 +336,19 @@ async def create_or_update_advisory_packages(
         )
         await AdvisoryPackage.filter(id__in=ids).update(product_name=product_name)
 
-    # Remove packages not in the new list only on explicit repair.
+    # Remove packages not in the new list only on explicit repair, and
+    # only for arches this rematch actually produced.
     if replace_packages:
-        nevras_to_remove = existing_nevras - new_nevras
+        new_arches = set()
+        for nevra in new_nevras:
+            arch = _nevra_arch(nevra)
+            if arch is not None:
+                new_arches.add(arch)
+        nevras_to_remove = {
+            nevra
+            for nevra in existing_nevras - new_nevras
+            if _nevra_arch(nevra) in new_arches
+        }
         if nevras_to_remove:
             logger.info("Removing %d packages from advisory %s", len(nevras_to_remove), advisory.name)
             await AdvisoryPackage.filter(advisory_id=advisory.id, nevra__in=list(nevras_to_remove)).delete()

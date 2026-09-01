@@ -685,6 +685,52 @@ class TestCreateOrUpdateAdvisoryPackages(unittest.TestCase):
             AP.bulk_create.assert_called_once()
             filter_mock.delete.assert_called_once()
 
+    def test_repair_keeps_packages_for_arches_not_in_new_set(self):
+        existing_x86 = Mock(
+            id=1,
+            nevra="glibc-0:2.28-251.el8_10.x86_64.rpm",
+            product_name="Rocky Linux 8 x86_64",
+            module_name=None,
+        )
+        existing_arm = Mock(
+            id=2,
+            nevra="glibc-0:2.28-251.el8_10.aarch64.rpm",
+            product_name="Rocky Linux 8 aarch64",
+            module_name=None,
+        )
+        filter_mock = MagicMock()
+        filter_mock.all = AsyncMock(return_value=[existing_x86, existing_arm])
+        filter_mock.update = AsyncMock()
+        filter_mock.delete = AsyncMock()
+        advisory = Mock(id=10, name="RLSA-2026:2786")
+        shipped = _new_pkg(
+            "glibc-0:2.28-251.el8_10.2.x86_64.rpm",
+            product_name="Rocky Linux 8 x86_64",
+        )
+        with patch(
+            "apollo.rpmworker.rh_matcher_activities.AdvisoryPackage"
+        ) as AP:
+            AP.filter.return_value = filter_mock
+            AP.bulk_create = AsyncMock()
+            self._run(
+                create_or_update_advisory_packages(
+                    advisory,
+                    [shipped],
+                    update_advisory=True,
+                    replace_packages=True,
+                )
+            )
+            AP.bulk_create.assert_called_once()
+            filter_mock.delete.assert_called_once()
+            deleted = None
+            for call in AP.filter.call_args_list:
+                kwargs = call.kwargs
+                if "nevra__in" in kwargs:
+                    deleted = set(kwargs["nevra__in"])
+            self.assertEqual(
+                deleted, {"glibc-0:2.28-251.el8_10.x86_64.rpm"}
+            )
+
 
 class TestProcessRepomdSkippedUrls(unittest.TestCase):
     def setUp(self):
