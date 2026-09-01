@@ -9,7 +9,11 @@ from tortoise.transactions import in_transaction
 from apollo.db import SupportedProduct, SupportedProductsRhMirror, SupportedProductsRpmRepomd, SupportedProductsRpmRhOverride, SupportedProductsRhBlock
 from apollo.db import RedHatAdvisory, Advisory, AdvisoryAffectedProduct, AdvisoryCVE, AdvisoryFix, AdvisoryPackage
 from apollo.rpmworker import repomd
-from apollo.rpmworker.nvra_match import find_nvra_alias, lowest_compatible_pkgs
+from apollo.rpmworker.nvra_match import (
+    find_nvra_alias,
+    lowest_compatible_pkgs,
+    select_clone_pkgs,
+)
 from apollo.rpm_helpers import parse_dist_version, parse_nevra
 from apollo.rhcsaf import fix_source_url
 
@@ -708,9 +712,8 @@ async def clone_advisory(
             pkg_name_map[name].append(cleaned)
 
     # Alias advisory NVRA → repo NVRA via .rocky prefix or EVR >=.
-    # A cleaned-key hit must still yield a lowest EVR >= RH (same dist
-    # major). Dist-compatible XML alone is not enough: module streams
-    # share a cleaned key after stripping ``.module+el8.Y``.
+    # clone_advisory prefers current-stream hits over vault; this map is
+    # only used when the exact cleaned key has no satisfying package.
     nvra_alias = {}
     for advisory_nvra, advisory_nevra in clean_advisory_nvras.items():
         exact_pkgs = pkg_nvras.get(advisory_nvra, [])
@@ -767,19 +770,41 @@ async def clone_advisory(
         # Clone packages
         new_pkgs = []
         rh_modules_by_cleaned = _rh_modules_by_cleaned_nevra(advisory)
+        historical_ids = {
+            str(mirror.id)
+            for mirror in mirrors
+            if _is_historical_mirror(mirror)
+        }
         for cleaned_rh_nvra, rh_nevra in clean_advisory_nvras.items():
             advisory_nvra = cleaned_rh_nvra
-            pkgs_to_process = lowest_compatible_pkgs(
-                rh_nevra, pkg_nvras.get(advisory_nvra, [])
+            match = repomd.NVRA_RE.search(cleaned_rh_nvra)
+            pool: list = []
+            seen_pkg = set()
+            names = []
+            if match:
+                names.append(match.group(1))
+            for cleaned in names and pkg_name_map.get(names[0], []) or []:
+                for pkg in pkg_nvras.get(cleaned, []):
+                    ident = id(pkg)
+                    if ident in seen_pkg:
+                        continue
+                    seen_pkg.add(ident)
+                    pool.append(pkg)
+            if cleaned_rh_nvra in nvra_alias:
+                advisory_nvra = nvra_alias[cleaned_rh_nvra]
+                for pkg in pkg_nvras.get(advisory_nvra, []):
+                    ident = id(pkg)
+                    if ident in seen_pkg:
+                        continue
+                    seen_pkg.add(ident)
+                    pool.append(pkg)
+            if not pool:
+                pool = list(pkg_nvras.get(cleaned_rh_nvra, []))
+            pkgs_to_process = select_clone_pkgs(
+                rh_nevra, pool, historical_ids
             )
             if not pkgs_to_process:
-                if advisory_nvra in nvra_alias:
-                    advisory_nvra = nvra_alias[advisory_nvra]
-                    pkgs_to_process = lowest_compatible_pkgs(
-                        rh_nevra, pkg_nvras.get(advisory_nvra, [])
-                    )
-                if not pkgs_to_process:
-                    continue
+                continue
 
             for pkg in pkgs_to_process:
                 pkg_name = pkg.find(

@@ -7,13 +7,14 @@ from apollo.rpmworker.nvra_match import (
     find_nvra_alias,
     lowest_compatible_pkgs,
     pkg_dist_compatible_with_rh,
+    select_clone_pkgs,
     _is_rebuild_prefix,
 )
 
 NS = "http://linux.duke.edu/metadata/common"
 
 
-def _pkg(name, version, release, arch, epoch="0"):
+def _pkg(name, version, release, arch, epoch="0", mirror_id=None):
     pkg = ET.Element(f"{{{NS}}}package")
     ET.SubElement(pkg, f"{{{NS}}}name").text = name
     ver = ET.SubElement(pkg, f"{{{NS}}}version")
@@ -21,6 +22,8 @@ def _pkg(name, version, release, arch, epoch="0"):
     ver.set("rel", release)
     ver.set("epoch", epoch)
     ET.SubElement(pkg, f"{{{NS}}}arch").text = arch
+    if mirror_id is not None:
+        pkg.set("mirror_id", str(mirror_id))
     return pkg
 
 
@@ -254,6 +257,79 @@ class TestLowestCompatiblePkgs(unittest.TestCase):
                 ("aarch64", "10.module+el8.5.0+706+e497ead8"),
             },
         )
+
+
+class TestSelectClonePkgs(unittest.TestCase):
+    def test_prefers_current_stream_over_older_vault(self):
+        """Yum repos have 48.rocky; vault 8.3 still has compose -31."""
+        vault = _pkg(
+            "platform-python", "3.6.8", "31.el8", "x86_64", mirror_id="vault"
+        )
+        current = _pkg(
+            "platform-python",
+            "3.6.8",
+            "48.el8_7.rocky.0",
+            "x86_64",
+            mirror_id="cur",
+        )
+        picked = select_clone_pkgs(
+            "platform-python-0:3.6.8-31.el8.x86_64.rpm",
+            [vault, current],
+            historical_mirror_ids={"vault"},
+        )
+        self.assertEqual(picked, [current])
+
+    def test_vault_when_current_jumps_version(self):
+        vault = _pkg(
+            "firefox", "128.12.0", "1.el10_0", "x86_64", mirror_id="vault"
+        )
+        current = _pkg(
+            "firefox", "140.10.2", "1.el10_2", "x86_64", mirror_id="cur"
+        )
+        picked = select_clone_pkgs(
+            "firefox-0:128.12.0-1.el10_0.x86_64.rpm",
+            [vault, current],
+            historical_mirror_ids={"vault"},
+        )
+        self.assertEqual(picked, [vault])
+
+    def test_vault_when_current_jumps_kernel_point_release(self):
+        vault = _pkg(
+            "kernel", "6.12.0", "55.18.1.el10_0", "x86_64", mirror_id="vault"
+        )
+        current = _pkg(
+            "kernel", "6.12.0", "211.16.1.el10_2.0.1", "x86_64", mirror_id="cur"
+        )
+        picked = select_clone_pkgs(
+            "kernel-0:6.12.0-55.18.1.el10_0.x86_64.rpm",
+            [vault, current],
+            historical_mirror_ids={"vault"},
+        )
+        self.assertEqual(picked, [vault])
+
+    def test_openssl_14_not_replaced_by_current_17(self):
+        vault = _pkg(
+            "openssl-libs",
+            "1.1.1k",
+            "14.el8_10",
+            "x86_64",
+            epoch="1",
+            mirror_id="vault",
+        )
+        current = _pkg(
+            "openssl-libs",
+            "1.1.1k",
+            "17.el8_10",
+            "x86_64",
+            epoch="1",
+            mirror_id="cur",
+        )
+        picked = select_clone_pkgs(
+            "openssl-libs-1:1.1.1k-14.el8_6.x86_64.rpm",
+            [vault, current],
+            historical_mirror_ids={"vault"},
+        )
+        self.assertEqual(picked, [vault])
 
 
 class TestPkgDistCompatibleWithRh(unittest.TestCase):
