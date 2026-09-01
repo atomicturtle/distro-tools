@@ -258,6 +258,48 @@ class TestLowestCompatiblePkgs(unittest.TestCase):
             },
         )
 
+    def test_stamped_module_streams_are_kept_separately(self):
+        n16 = _pkg(
+            "nodejs-nodemon",
+            "3.0.1",
+            "1.module+el8.9.0+1+aaa",
+            "noarch",
+        )
+        n16.set("module_stream", "16")
+        n20 = _pkg(
+            "nodejs-nodemon",
+            "3.0.1",
+            "1.module+el8.10.0+2+bbb",
+            "noarch",
+        )
+        n20.set("module_stream", "20")
+        picked = lowest_compatible_pkgs(
+            "nodejs-nodemon-0:3.0.1-1.module+el8.9.0+1+aaa.noarch.rpm",
+            [n16, n20],
+        )
+        self.assertEqual({p.get("module_stream") for p in picked}, {"16", "20"})
+
+    def test_same_stream_rebuilds_still_collapse(self):
+        older = _pkg(
+            "python2-attrs",
+            "17.4.0",
+            "10.module+el8.5.0+706+e497ead8",
+            "noarch",
+        )
+        older.set("module_stream", "2.7")
+        newer = _pkg(
+            "python2-attrs",
+            "17.4.0",
+            "10.module+el8.10.0+40170+3b32c808",
+            "noarch",
+        )
+        newer.set("module_stream", "2.7")
+        picked = lowest_compatible_pkgs(
+            "python2-attrs-0:17.4.0-10.module+el8.0.0+2961+596d0223.noarch.rpm",
+            [newer, older],
+        )
+        self.assertEqual(picked, [older])
+
 
 class TestSelectClonePkgs(unittest.TestCase):
     def test_prefers_current_stream_over_older_vault(self):

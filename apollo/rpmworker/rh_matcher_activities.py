@@ -47,6 +47,31 @@ def _module_fields_from_yaml(module_pkgs: dict, nevra_key: str):
     return data[0], data[1], data[2], data[3]
 
 
+def _stamp_module_stream(pkg: ET.Element, module_pkgs: dict) -> None:
+    """Copy YAML stream onto the XML element for stream-aware lowest-EVR."""
+    if pkg.get("module_stream") or not module_pkgs:
+        return
+    name_el = pkg.find("{http://linux.duke.edu/metadata/common}name")
+    version_tree = pkg.find("{http://linux.duke.edu/metadata/common}version")
+    arch_el = pkg.find("{http://linux.duke.edu/metadata/common}arch")
+    if name_el is None or version_tree is None or arch_el is None:
+        return
+    if not name_el.text or not arch_el.text:
+        return
+    nevra = (
+        f"{name_el.text}-{version_tree.attrib.get('epoch', '0')}:"
+        f"{version_tree.attrib['ver']}-{version_tree.attrib['rel']}."
+        f"{arch_el.text}"
+    )
+    _name, stream, _ver, _ctx = _module_fields_from_yaml(module_pkgs, nevra)
+    if not stream:
+        _name, stream, _ver, _ctx = _module_fields_from_yaml(
+            module_pkgs, f"{nevra}.rpm"
+        )
+    if stream is not None:
+        pkg.set("module_stream", str(stream))
+
+
 def _enrich_module_version_from_yaml(module_pkgs, module_name, module_stream, module_version, module_context):
     if module_version and module_context:
         return module_version, module_context
@@ -319,7 +344,10 @@ async def create_or_update_advisory_packages(
     Repair (replace_packages): add missing NEVRAs and delete those not in the
     new match set (vault + current lowest-EVR rematch). Only delete NEVRAs
     whose arch appears in the new set so an x86_64-only walk cannot wipe
-    aarch64 / ppc64le / s390x packages the rematch never indexed.
+    aarch64 / ppc64le / s390x packages the rematch never indexed. If the new
+    set has no ship-arch RPMs (only noarch/src, typical of a modular default
+    stream that only hit nodemon), skip deletes entirely so leftover binaries
+    are not treated as obsolete.
     """
     logger = Logger()
     logger.info("Creating or updating advisory packages for %s", advisory.name)
@@ -399,6 +427,11 @@ async def create_or_update_advisory_packages(
             arch = _nevra_arch(nevra)
             if arch is not None:
                 new_arches.add(arch)
+        # Modular walks often match only default-stream noarch/src. That is
+        # not a complete package set — do not delete leftover ship-arch RPMs
+        # (or other-stream noarch) as if the clone had been fully rematched.
+        if not (new_arches & SHIP_PRODUCT_ARCHES):
+            new_arches = set()
         nevras_to_remove = {
             nevra
             for nevra in existing_nevras - new_nevras
@@ -788,6 +821,7 @@ async def clone_advisory(
     # { pkg_name: [raw_nvra, raw_nvra, ...] }
     for pkgs in all_pkgs:
         for pkg in pkgs:
+            _stamp_module_stream(pkg, module_pkgs)
             cleaned, raw = repomd.clean_nvra_pkg(pkg)
             name = repomd.NVRA_RE.search(cleaned).group(1)
             if cleaned not in pkg_nvras:

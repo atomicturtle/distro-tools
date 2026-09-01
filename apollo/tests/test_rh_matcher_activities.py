@@ -33,6 +33,7 @@ from apollo.rpmworker.rh_matcher_activities import (
     _nvra_with_arch,
     _repomd_belongs_to_mirror,
     _repo_search_cleaned,
+    _stamp_module_stream,
 )
 
 NS = "http://linux.duke.edu/metadata/common"
@@ -751,6 +752,76 @@ class TestCreateOrUpdateAdvisoryPackages(unittest.TestCase):
             self.assertEqual(
                 deleted, {"glibc-0:2.28-251.el8_10.x86_64.rpm"}
             )
+
+    def test_repair_noarch_only_does_not_delete_ship_arch(self):
+        existing_bin = Mock(
+            id=1,
+            nevra="nodejs-1:20.11.1-1.module+el8.10.0+1+abc.x86_64.rpm",
+            product_name="Rocky Linux 8 x86_64",
+            module_name="nodejs",
+        )
+        existing_noarch = Mock(
+            id=2,
+            nevra="nodejs-nodemon-0:3.0.1-1.module+el8.10.0+1+abc.noarch.rpm",
+            product_name="Rocky Linux 8 x86_64",
+            module_name="nodejs",
+        )
+        filter_mock = MagicMock()
+        filter_mock.all = AsyncMock(
+            return_value=[existing_bin, existing_noarch]
+        )
+        filter_mock.update = AsyncMock()
+        filter_mock.delete = AsyncMock()
+        advisory = Mock(id=10, name="RLSA-2024:1444")
+        nodemon = _new_pkg(
+            "nodejs-nodemon-0:3.0.1-1.module+el8.10.0+2+def.noarch.rpm",
+            product_name="Rocky Linux 8 x86_64",
+        )
+        src = _new_pkg(
+            "nodejs-nodemon-0:3.0.1-1.module+el8.10.0+2+def.src.rpm",
+            product_name="Rocky Linux 8 x86_64",
+        )
+        with patch(
+            "apollo.rpmworker.rh_matcher_activities.AdvisoryPackage"
+        ) as AP:
+            AP.filter.return_value = filter_mock
+            AP.bulk_create = AsyncMock()
+            self._run(
+                create_or_update_advisory_packages(
+                    advisory,
+                    [nodemon, src],
+                    update_advisory=True,
+                    replace_packages=True,
+                )
+            )
+            AP.bulk_create.assert_called_once()
+            filter_mock.delete.assert_not_called()
+
+
+class TestStampModuleStream(unittest.TestCase):
+    def test_stamps_stream_from_yaml_artifacts(self):
+        pkg = _make_pkg_element(
+            "nodejs",
+            "16.20.2",
+            "1.module+el8.9.0+1+abc",
+            "x86_64",
+            epoch="1",
+        )
+        module_pkgs = {
+            "nodejs-1:16.20.2-1.module+el8.9.0+1+abc.x86_64": (
+                "nodejs",
+                "16",
+                "809002021000000",
+                "deadbeef",
+            ),
+        }
+        _stamp_module_stream(pkg, module_pkgs)
+        self.assertEqual(pkg.get("module_stream"), "16")
+
+    def test_leaves_unstamped_when_yaml_misses(self):
+        pkg = _make_pkg_element("bash", "5.1.8", "9.el9_7", "x86_64")
+        _stamp_module_stream(pkg, {})
+        self.assertIsNone(pkg.get("module_stream"))
 
 
 class TestProcessRepomdSkippedUrls(unittest.TestCase):

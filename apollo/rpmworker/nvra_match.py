@@ -5,10 +5,12 @@ Matching order:
 1. Exact cleaned NVRA (handled by callers via dict lookup) **plus**
    ``lowest_compatible_pkgs``. Cleaning strips ``.el10_0`` / ``.el8_10``
    and ``.module+el8.Y.0+build``, so several Rocky rebuilds share a key.
-   Callers must keep **one** XML package per (name, arch): the lowest EVR
-   that is still >= the RH fixed EVR on the same dist major. Attaching
-   every module stream makes clone fidelity report the newest (el8.10)
-   even when vault still has the shipped el8.5 rebuild.
+   Callers must keep **one** XML package per (name, arch[, module stream]):
+   the lowest EVR that is still >= the RH fixed EVR on the same dist major.
+   Same-stream rebuilds (python2-attrs ``el8.5`` vs ``el8.10``) collapse to
+   the lowest EVR. Distinct streams stamped on the XML element (nodejs 16
+   vs 20) stay separate — otherwise a default-stream walk keeps one nodemon
+   and drops the rest.
    Point-release tags on the same major may differ: Rocky ships RH
    ``el8_6`` openssl as ``el8_10`` (RLSA-2024:7848).
 2. Prefix match (Rocky .rocky.* rebuild suffix on the same NVR), with a
@@ -150,14 +152,23 @@ def _pkg_stripped_matches_rh(rh_nevra: str, pkg: ET.Element) -> bool:
     return rocky_stripped.startswith(rh_stripped + ".")
 
 
+def _pkg_stream(pkg: ET.Element) -> str:
+    return pkg.get("module_stream") or ""
+
+
 def _lowest_among(pkgs: list[ET.Element]) -> list[ET.Element]:
-    """One package per (name, arch): lowest EVR. Caller already filtered."""
-    best: dict[tuple[str, str], tuple[tuple[str, str, str], ET.Element]] = {}
+    """One package per (name, arch, stream): lowest EVR. Caller already filtered.
+
+    ``module_stream`` is optional. Unstamped packages share the empty stream
+    and still collapse same-name rebuilds (python2-attrs el8.5 vs el8.10).
+    """
+    best: dict[tuple[str, str, str], tuple[tuple[str, str, str], ET.Element]] = {}
     for pkg in pkgs:
         evr = _pkg_evr(pkg)
-        key = _pkg_name_arch(pkg)
-        if evr is None or key is None:
+        name_arch = _pkg_name_arch(pkg)
+        if evr is None or name_arch is None:
             continue
+        key = (name_arch[0], name_arch[1], _pkg_stream(pkg))
         prev = best.get(key)
         if prev is None or label_compare(
             evr[0], evr[1], evr[2], prev[0][0], prev[0][1], prev[0][2]
@@ -179,11 +190,12 @@ def lowest_compatible_pkgs(
     rh_nevra: str,
     pkgs: list[ET.Element],
 ) -> list[ET.Element]:
-    """One Rocky XML package per (name, arch): lowest EVR >= RH.
+    """One Rocky XML package per (name, arch[, stream]): lowest EVR >= RH.
 
     Cleaning collapses ``python2-attrs-17.4.0-10.module+el8.5.0+…`` and
     ``…module+el8.10.0+…`` onto the same key. Dist-major compatibility
-    alone would attach both; fidelity then reports the newest stream.
+    alone would attach both; fidelity then reports the newest rebuild.
+    Stamped ``module_stream`` keeps nodejs 16 and 20 as separate rows.
     """
     return _lowest_per_name_arch(rh_nevra, pkgs)
 
