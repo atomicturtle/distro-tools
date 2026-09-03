@@ -126,6 +126,14 @@ py_test(
 )
 
 py_test(
+    name = "test_nvd_client",
+    srcs = ["test_nvd_client.py"],
+    deps = [
+        "//apollo/nvd:nvd_lib",
+    ],
+)
+
+py_test(
     name = "test_rh_matcher_activities",
     srcs = ["test_rh_matcher_activities.py"],
     deps = [

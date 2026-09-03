@@ -113,6 +113,30 @@ CREATE TABLE public.advisory_cves (
 
 
 --
+-- Name: nvd_cves; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.nvd_cves (
+    id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone,
+    cve_id character varying(32) NOT NULL,
+    description text,
+    cvss_v2_score text,
+    cvss_v2_vector text,
+    cvss_v3_score text,
+    cvss_v3_vector text,
+    cvss_v4_score text,
+    cvss_v4_vector text,
+    cwe text,
+    refs jsonb,
+    published_at timestamp with time zone,
+    last_modified_at timestamp with time zone,
+    fetched_at timestamp with time zone NOT NULL
+);
+
+
+--
 -- Name: advisory_cves_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 

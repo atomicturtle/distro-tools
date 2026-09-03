@@ -1,0 +1,19 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+
+py_library(
+    name = "nvd_lib",
+    srcs = [
+        "__init__.py",
+        "cli.py",
+        "client.py",
+        "sync.py",
+    ],
+    imports = ["../.."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//apollo/db:db_lib",
+        "//common:common_lib",
+        "@pypi_aiohttp//:pkg",
+        "@pypi_tortoise_orm//:pkg",
+    ],
+)

@@ -467,3 +467,31 @@ class AdvisoryAffectedProduct(Model):
             "minor_version",
             "arch",
         )
+
+
+class NvdCve(Model):
+    """NVD enrichment for CVE IDs Apollo already knows (RH / Rocky).
+
+    RH ``advisory_cves`` / ``red_hat_advisory_cves`` stay authoritative for
+    vendor scores and fix status. This table is the NVD join (CVSS/CWE/refs).
+    """
+
+    id = fields.BigIntField(pk=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+    cve_id = fields.CharField(max_length=32, unique=True)
+    description = fields.TextField(null=True)
+    cvss_v2_score = fields.TextField(null=True)
+    cvss_v2_vector = fields.TextField(null=True)
+    cvss_v3_score = fields.TextField(null=True)
+    cvss_v3_vector = fields.TextField(null=True)
+    cvss_v4_score = fields.TextField(null=True)
+    cvss_v4_vector = fields.TextField(null=True)
+    cwe = fields.TextField(null=True)
+    refs = fields.JSONField(null=True)
+    published_at = fields.DatetimeField(null=True)
+    last_modified_at = fields.DatetimeField(null=True)
+    fetched_at = fields.DatetimeField()
+
+    class Meta:
+        table = "nvd_cves"
