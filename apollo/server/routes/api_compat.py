@@ -134,6 +134,10 @@ def v3_advisory_to_v2(
 
     published_at = advisory.published_at.isoformat("T"
                                                   ).replace("+00:00", "") + "Z"
+    rocky_published_at = None
+    rocky = getattr(advisory, "rocky_published_at", None)
+    if rocky is not None:
+        rocky_published_at = rocky.isoformat("T").replace("+00:00", "") + "Z"
     severity = advisory.severity.upper()
     if severity == "NONE":
         severity = "UNKNOWN"
@@ -147,6 +151,7 @@ def v3_advisory_to_v2(
     return Advisory_Pydantic_V2(
         id=advisory.id,
         publishedAt=published_at,
+        rockyPublishedAt=rocky_published_at,
         name=advisory.name,
         synopsis=advisory.synopsis,
         description=advisory.description,
@@ -158,7 +163,8 @@ def v3_advisory_to_v2(
         rpms=rpms,
         affectedProducts=affected_products,
         references=[],
-        rebootSuggested=False,
+        rebootSuggested=bool(getattr(advisory, "reboot_suggested", False)),
+        restartSuggested=bool(getattr(advisory, "restart_suggested", False)),
         buildReferences=[],
         fixes=fixes,
         cves=cves,

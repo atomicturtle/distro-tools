@@ -48,8 +48,10 @@ def _module_fields_from_yaml(module_pkgs: dict, nevra_key: str):
 
 
 def _stamp_module_stream(pkg: ET.Element, module_pkgs: dict) -> None:
-    """Copy YAML stream onto the XML element for stream-aware lowest-EVR."""
-    if pkg.get("module_stream") or not module_pkgs:
+    """Copy YAML stream/version onto the XML element for modular matching."""
+    if not module_pkgs:
+        return
+    if pkg.get("module_stream") and pkg.get("module_version"):
         return
     name_el = pkg.find("{http://linux.duke.edu/metadata/common}name")
     version_tree = pkg.find("{http://linux.duke.edu/metadata/common}version")
@@ -63,13 +65,15 @@ def _stamp_module_stream(pkg: ET.Element, module_pkgs: dict) -> None:
         f"{version_tree.attrib['ver']}-{version_tree.attrib['rel']}."
         f"{arch_el.text}"
     )
-    _name, stream, _ver, _ctx = _module_fields_from_yaml(module_pkgs, nevra)
+    _name, stream, ver, _ctx = _module_fields_from_yaml(module_pkgs, nevra)
     if not stream:
-        _name, stream, _ver, _ctx = _module_fields_from_yaml(
+        _name, stream, ver, _ctx = _module_fields_from_yaml(
             module_pkgs, f"{nevra}.rpm"
         )
-    if stream is not None:
+    if stream is not None and not pkg.get("module_stream"):
         pkg.set("module_stream", str(stream))
+    if ver is not None and not pkg.get("module_version"):
+        pkg.set("module_version", str(ver))
 
 
 def _enrich_module_version_from_yaml(module_pkgs, module_name, module_stream, module_version, module_context):
@@ -526,6 +530,23 @@ async def sync_clone_cves_from_redhat(rh_advisory: RedHatAdvisory) -> None:
     rh_cves = await RedHatAdvisoryCVE.filter(red_hat_advisory_id=rh_advisory.id).all()
     await create_or_update_advisory_cves(clone, rh_cves, update_advisory=True)
 
+
+async def sync_clone_restart_from_redhat(rh_advisory: RedHatAdvisory) -> None:
+    """Copy reboot/restart flags from the Red Hat advisory onto its Rocky clone."""
+    clone = await Advisory.filter(red_hat_advisory_id=rh_advisory.id).get_or_none()
+    if not clone:
+        return
+    changed = False
+    if clone.reboot_suggested != bool(rh_advisory.reboot_suggested):
+        clone.reboot_suggested = bool(rh_advisory.reboot_suggested)
+        changed = True
+    if clone.restart_suggested != bool(rh_advisory.restart_suggested):
+        clone.restart_suggested = bool(rh_advisory.restart_suggested)
+        changed = True
+    if changed:
+        await clone.save()
+
+
 async def create_or_update_advisory_fixes(
     advisory: Advisory,
     fixes: list,
@@ -836,10 +857,16 @@ async def clone_advisory(
     # Alias advisory NVRA → repo NVRA via .rocky prefix or EVR >=.
     # clone_advisory prefers current-stream hits over vault; this map is
     # only used when the exact cleaned key has no satisfying package.
+    rh_modules_by_cleaned = _rh_modules_by_cleaned_nevra(advisory)
     nvra_alias = {}
     for advisory_nvra, advisory_nevra in clean_advisory_nvras.items():
+        rh_mver = (rh_modules_by_cleaned.get(advisory_nvra) or {}).get(
+            "module_version"
+        )
         exact_pkgs = pkg_nvras.get(advisory_nvra, [])
-        if lowest_compatible_pkgs(advisory_nevra, exact_pkgs):
+        if lowest_compatible_pkgs(
+            advisory_nevra, exact_pkgs, rh_module_version=rh_mver
+        ):
             continue
         match = repomd.NVRA_RE.search(advisory_nvra)
         if not match:
@@ -849,6 +876,7 @@ async def clone_advisory(
             pkg_name_map.get(match.group(1), []),
             advisory_nevra=advisory_nevra,
             raw_pkg_nvras=pkg_nvras,
+            rh_module_version=rh_mver,
         )
         if alias:
             nvra_alias[advisory_nvra] = alias
@@ -884,6 +912,8 @@ async def clone_advisory(
                 red_hat_advisory_id=advisory.id,
                 published_at=advisory_clone_published_at(advisory, published_at),
                 topic=advisory.topic,
+                reboot_suggested=bool(advisory.reboot_suggested),
+                restart_suggested=bool(advisory.restart_suggested),
             )
         else:
             update_advisory = True
@@ -891,7 +921,6 @@ async def clone_advisory(
 
         # Clone packages
         new_pkgs = []
-        rh_modules_by_cleaned = _rh_modules_by_cleaned_nevra(advisory)
         historical_ids = {
             str(mirror.id)
             for mirror in mirrors
@@ -922,14 +951,13 @@ async def clone_advisory(
                     pool.append(pkg)
             if not pool:
                 pool = list(pkg_nvras.get(cleaned_rh_nvra, []))
-            rh_stream = (rh_modules_by_cleaned.get(cleaned_rh_nvra) or {}).get(
-                "module_stream"
-            )
+            rh_meta = rh_modules_by_cleaned.get(cleaned_rh_nvra) or {}
             pkgs_to_process = select_clone_pkgs(
                 rh_nevra,
                 pool,
                 historical_ids,
-                rh_module_stream=rh_stream,
+                rh_module_stream=rh_meta.get("module_stream"),
+                rh_module_version=rh_meta.get("module_version"),
             )
             if not pkgs_to_process:
                 continue
@@ -1011,10 +1039,28 @@ async def clone_advisory(
 
         if not new_pkgs:
             if existing_advisory:
-                logger.info(
-                    "No packages in current index for %s; leaving existing clone",
-                    advisory.name,
-                )
+                if replace_packages:
+                    # Repair walk found nothing eligible (e.g. modular
+                    # module_version guard rejected older rebuilds). Drop the
+                    # wrong snapshot rather than keep a known-bad clone.
+                    deleted = await AdvisoryPackage.filter(
+                        advisory_id=new_advisory.id
+                    ).delete()
+                    if new_advisory.rocky_published_at is not None:
+                        new_advisory.rocky_published_at = None
+                        await new_advisory.save(
+                            update_fields=["rocky_published_at"]
+                        )
+                    logger.info(
+                        "Cleared %s packages on %s; no eligible Rocky match",
+                        deleted,
+                        advisory.name,
+                    )
+                else:
+                    logger.info(
+                        "No packages in current index for %s; leaving existing clone",
+                        advisory.name,
+                    )
                 return
             logger.info(
                 "Blocking advisory %s, no packages",
@@ -1078,6 +1124,8 @@ async def clone_advisory(
 This update affects {', '.join(affected_products)}.
 A Common Vulnerability Scoring System (CVSS) base score, which gives a detailed severity rating, is available for each vulnerability from the CVE list"""
         new_advisory.topic = topic
+        new_advisory.reboot_suggested = bool(advisory.reboot_suggested)
+        new_advisory.restart_suggested = bool(advisory.restart_suggested)
 
         await new_advisory.save()
 
@@ -1180,6 +1228,7 @@ async def process_repomd(
 
         pkg.set("mirror_id", str(mirror.id))
         pkg.set("repo_name", rpm_repomd.repo_name)
+        _stamp_module_stream(pkg, module_packages)
         if cleaned not in raw_pkg_nvras:
             raw_pkg_nvras[cleaned] = []
         raw_pkg_nvras[cleaned].append(pkg)
@@ -1195,6 +1244,7 @@ async def process_repomd(
     for advisory in advisories:
         logger.debug(f"Processing advisory: {advisory.name} inside of `process_repomd` for {mirror.name}")
         clean_advisory_nvras = {}
+        clean_advisory_mvers = {}
         nvra_alias = {}
         # Loop through each package in the advisory and check if we
         # have a match from the rocky repos
@@ -1218,17 +1268,23 @@ async def process_repomd(
             )
             if search_cleaned not in clean_advisory_nvras:
                 exact_pkgs = raw_pkg_nvras.get(search_cleaned, [])
-                if not lowest_compatible_pkgs(advisory_pkg.nevra, exact_pkgs):
+                if not lowest_compatible_pkgs(
+                    advisory_pkg.nevra,
+                    exact_pkgs,
+                    rh_module_version=advisory_pkg.module_version,
+                ):
                     # Prefix (.rocky) or EVR >= when Rocky already ships newer
                     alias = find_nvra_alias(
                         search_cleaned,
                         pkg_name_map.get(lookup_name, []),
                         advisory_nevra=advisory_pkg.nevra,
                         raw_pkg_nvras=raw_pkg_nvras,
+                        rh_module_version=advisory_pkg.module_version,
                     )
                     if alias:
                         nvra_alias[search_cleaned] = alias
                 clean_advisory_nvras[search_cleaned] = advisory_pkg.nevra
+                clean_advisory_mvers[search_cleaned] = advisory_pkg.module_version
 
         if not clean_advisory_nvras:
             logger.debug(f"No cleaned packages for {advisory.name}, moving on.")
@@ -1236,14 +1292,19 @@ async def process_repomd(
 
         matched_pkgs = set()
         for nevra, rh_nevra in clean_advisory_nvras.items():
+            rh_mver = clean_advisory_mvers.get(nevra)
             selected = lowest_compatible_pkgs(
-                rh_nevra, raw_pkg_nvras.get(nevra, [])
+                rh_nevra,
+                raw_pkg_nvras.get(nevra, []),
+                rh_module_version=rh_mver,
             )
             if not selected and nevra in nvra_alias:
                 logger.debug(f"nevra: {nevra}")
                 logger.debug(f"nvra_alias[nevra]: {nvra_alias[nevra]}")
                 selected = lowest_compatible_pkgs(
-                    rh_nevra, raw_pkg_nvras.get(nvra_alias[nevra], [])
+                    rh_nevra,
+                    raw_pkg_nvras.get(nvra_alias[nevra], []),
+                    rh_module_version=rh_mver,
                 )
             for pkg in selected:
                 pkg.set("repo_name", rpm_repomd.repo_name)

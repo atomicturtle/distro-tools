@@ -583,6 +583,10 @@ async def process_csaf_file(json_data: dict, filepath: str) -> Optional[RedHatAd
                     updates["severity"] = data["severity"]
                 if advisory.topic != data["topic"]:
                     updates["topic"] = data["topic"]
+                if advisory.reboot_suggested != bool(data.get("reboot_suggested")):
+                    updates["reboot_suggested"] = bool(data.get("reboot_suggested"))
+                if advisory.restart_suggested != bool(data.get("restart_suggested")):
+                    updates["restart_suggested"] = bool(data.get("restart_suggested"))
 
                 if updates:
                     updates["updated_at"] = datetime.now()
@@ -603,6 +607,8 @@ async def process_csaf_file(json_data: dict, filepath: str) -> Optional[RedHatAd
                     kind=data["kind"],
                     severity=data["severity"],
                     topic=data["topic"],
+                    reboot_suggested=bool(data.get("reboot_suggested")),
+                    restart_suggested=bool(data.get("restart_suggested")),
                 )
 
             # Handle packages
@@ -623,8 +629,10 @@ async def process_csaf_file(json_data: dict, filepath: str) -> Optional[RedHatAd
             )
             from apollo.rpmworker.rh_matcher_activities import (
                 sync_clone_cves_from_redhat,
+                sync_clone_restart_from_redhat,
             )
             await sync_clone_cves_from_redhat(advisory)
+            await sync_clone_restart_from_redhat(advisory)
 
             # Handle Bugzilla tickets
             logger.info(f"Processing Bugzilla bugs for advisory {advisory.name}")

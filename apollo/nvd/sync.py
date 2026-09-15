@@ -22,10 +22,20 @@ async def known_cve_ids() -> list[str]:
 
 
 async def upsert_nvd_row(fields: dict) -> NvdCve:
+    """Insert or update an ``nvd_cves`` row.
+
+    Partial sources (vuls) often omit ``published_at`` / ``last_modified_at``.
+    Never replace an existing non-null column with ``None`` so a later NIST
+    fill is not wiped by a vuls-only refresh.
+    """
     now = datetime.datetime.now(datetime.timezone.utc)
     existing = await NvdCve.filter(cve_id=fields["cve_id"]).first()
     if existing:
         for key, value in fields.items():
+            if key == "cve_id":
+                continue
+            if value is None and getattr(existing, key, None) is not None:
+                continue
             setattr(existing, key, value)
         existing.fetched_at = now
         await existing.save()
@@ -69,6 +79,7 @@ async def sync_known_cves(
     *,
     limit: Optional[int] = None,
     only_missing: bool = False,
+    only_missing_dates: bool = False,
     api_key: Optional[str] = None,
     sleep_seconds: Optional[float] = None,
 ) -> dict:
@@ -78,6 +89,12 @@ async def sync_known_cves(
             await NvdCve.all().values_list("cve_id", flat=True)
         )
         ids = [c for c in ids if c not in have]
+    elif only_missing_dates:
+        # Rows that exist (often from vuls) but never got NIST publish stamps.
+        need = set(
+            await NvdCve.filter(published_at=None).values_list("cve_id", flat=True)
+        )
+        ids = [c for c in ids if c in need]
     if limit is not None:
         ids = ids[:limit]
     counts = await sync_cve_ids(

@@ -31,6 +31,39 @@ EUS_PRODUCT_NAME_KEYWORDS = frozenset([
 _JIRA_TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]+-\d+$", re.IGNORECASE)
 _BUGZILLA_ID_RE = re.compile(r"^\d+$")
 
+# CSAF remediations[].restart_required.category → advisory flags.
+# machine/system/zone require a host reboot; service-scoped categories need a
+# process/service restart without necessarily rebooting.
+_REBOOT_CATEGORIES = frozenset({"machine", "system", "zone"})
+_RESTART_CATEGORIES = frozenset({
+    "service",
+    "vulnerable_component",
+    "parent",
+    "dependencies",
+    "connected",
+})
+
+
+def extract_restart_required_flags(csaf: dict) -> tuple[bool, bool]:
+    """Derive (reboot_suggested, restart_suggested) from CSAF remediations.
+
+    Scans every vulnerability remediation's ``restart_required.category``.
+    ``none`` and missing categories contribute nothing. Both flags can be true
+    when remediations disagree across CVEs; reboot does not clear restart.
+    """
+    reboot = False
+    restart = False
+    for vulnerability in csaf.get("vulnerabilities") or []:
+        for remediation in vulnerability.get("remediations") or []:
+            category = (remediation.get("restart_required") or {}).get("category")
+            if not category or category == "none":
+                continue
+            if category in _REBOOT_CATEGORIES:
+                reboot = True
+            elif category in _RESTART_CATEGORIES:
+                restart = True
+    return reboot, restart
+
 def fix_source_url(ticket_id: str) -> str:
     """Build a canonical source URL for an advisory fix ticket id.
 
@@ -424,6 +457,8 @@ def red_hat_advisory_scraper(csaf: dict):
         cve_cwe = vulnerability.get("cwe", {}).get("id", None)
         red_hat_cve_set.add((cve_id, cve_cvss3_scoring_vector, cve_cvss3_base_score, cve_cwe))
 
+    reboot_suggested, restart_suggested = extract_restart_required_flags(csaf)
+
     return {
         "red_hat_issued_at": str(red_hat_issued_at),
         "red_hat_updated_at": str(red_hat_updated_at),
@@ -438,6 +473,8 @@ def red_hat_advisory_scraper(csaf: dict):
         "red_hat_cve_list": list(red_hat_cve_set),
         "red_hat_bugzilla_list": list(red_hat_bugzilla_set),
         "red_hat_affected_products": list(red_hat_affected_products),
+        "reboot_suggested": reboot_suggested,
+        "restart_suggested": restart_suggested,
     }
 
 

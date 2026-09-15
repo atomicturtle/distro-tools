@@ -1,13 +1,15 @@
-"""Sync NVD data for CVE IDs already in Apollo.
+"""Sync NVD enrichment for CVE IDs already in Apollo.
 
-Usage (on db1)::
+Preferred (prototype on db1)::
 
     source ~/apollo/.env
     cd ~/apollo/distro-tools
-    PYTHONPATH=. ~/apollo/venv/bin/python -m apollo.nvd.cli \\
-      --only-missing --limit 50
+    ENV=production DB_USER=apollo \\
+      PYTHONPATH=. ~/apollo/venv/bin/python -m apollo.nvd.cli \\
+      --from-vuls-db --only-missing
 
-Requires ``NVD_API_KEY`` for useful rate limits (optional but recommended).
+Falls back to NIST NVD API when ``--from-vuls-db`` is omitted
+(requires ``NVD_API_KEY`` for useful rate limits).
 """
 
 from __future__ import annotations
@@ -29,14 +31,25 @@ async def _run(args: argparse.Namespace) -> int:
     db = Database(initialize=True)
     await db.init(["apollo.db"])
 
-    from apollo.nvd.sync import sync_known_cves
+    if args.from_vuls_db:
+        from apollo.nvd.vuls_sync import sync_from_vuls_db
 
-    counts = await sync_known_cves(
-        limit=args.limit,
-        only_missing=args.only_missing,
-        api_key=args.api_key or os.environ.get("NVD_API_KEY"),
-        sleep_seconds=args.sleep,
-    )
+        counts = await sync_from_vuls_db(
+            db_path=args.vuls_db,
+            helper=args.helper,
+            limit=args.limit,
+            only_missing=args.only_missing,
+        )
+    else:
+        from apollo.nvd.sync import sync_known_cves
+
+        counts = await sync_known_cves(
+            limit=args.limit,
+            only_missing=args.only_missing,
+            only_missing_dates=args.only_missing_dates,
+            api_key=args.api_key or os.environ.get("NVD_API_KEY"),
+            sleep_seconds=args.sleep,
+        )
     print(counts)
     await Tortoise.close_connections()
     return 0 if counts.get("errors", 0) == 0 else 1
@@ -44,6 +57,28 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--from-vuls-db",
+        action="store_true",
+        help="Import from local vuls2 BoltDB instead of NIST API",
+    )
+    parser.add_argument(
+        "--vuls-db",
+        default=os.environ.get("VULS_DB", "/var/lib/vuls/vuls.db"),
+        help="Path to vuls.db (default: /var/lib/vuls/vuls.db)",
+    )
+    parser.add_argument(
+        "--helper",
+        default=os.environ.get(
+            "VULSDB_NVD_EXPORT",
+            os.path.join(
+                os.path.dirname(__file__),
+                "vulsdb_export",
+                "vulsdb-nvd-export",
+            ),
+        ),
+        help="Path to vulsdb-nvd-export binary",
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -56,15 +91,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Skip CVE IDs already present in nvd_cves",
     )
     parser.add_argument(
+        "--only-missing-dates",
+        action="store_true",
+        help="Only NIST-refresh rows that already exist but lack published_at",
+    )
+    parser.add_argument(
         "--api-key",
         default=None,
-        help="NVD API key (default: NVD_API_KEY env)",
+        help="NVD API key (NIST path only; default: NVD_API_KEY env)",
     )
     parser.add_argument(
         "--sleep",
         type=float,
         default=None,
-        help="Seconds between NVD requests",
+        help="Seconds between NVD API requests (NIST path only)",
     )
     args = parser.parse_args(argv)
     return asyncio.run(_run(args))

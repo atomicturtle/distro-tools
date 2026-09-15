@@ -61,6 +61,9 @@ class RedHatAdvisory(Model):
     kind = fields.CharField(max_length=255)
     severity = fields.CharField(max_length=255)
     topic = fields.TextField()
+    # From CSAF remediations[].restart_required.category
+    reboot_suggested = fields.BooleanField(default=False)
+    restart_suggested = fields.BooleanField(default=False)
 
     packages: fields.ReverseRelation["RedHatAdvisoryPackage"]
     cves: fields.ReverseRelation["RedHatAdvisoryCVE"]
@@ -314,12 +317,16 @@ class Advisory(Model):
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True, null=True)
     published_at = fields.DatetimeField()
+    rocky_published_at = fields.DatetimeField(null=True)
     name = fields.CharField(max_length=255, unique=True)
     synopsis = fields.TextField()
     description = fields.TextField()
     kind = fields.CharField(max_length=255)
     severity = fields.CharField(max_length=255)
     topic = fields.TextField()
+    # Copied from Red Hat CSAF restart_required (machine → reboot, service → restart)
+    reboot_suggested = fields.BooleanField(default=False)
+    restart_suggested = fields.BooleanField(default=False)
     red_hat_advisory = fields.ForeignKeyField(
         "models.RedHatAdvisory",
         related_name="published_advisories",
@@ -473,7 +480,8 @@ class NvdCve(Model):
     """NVD enrichment for CVE IDs Apollo already knows (RH / Rocky).
 
     RH ``advisory_cves`` / ``red_hat_advisory_cves`` stay authoritative for
-    vendor scores and fix status. This table is the NVD join (CVSS/CWE/refs).
+    vendor scores and fix status. This table is the NVD/vuls.db join
+    (CVSS/CWE/refs plus EPSS, KEV, exploit maturity/count, sample CPEs).
     """
 
     id = fields.BigIntField(pk=True)
@@ -489,6 +497,15 @@ class NvdCve(Model):
     cvss_v4_vector = fields.TextField(null=True)
     cwe = fields.TextField(null=True)
     refs = fields.JSONField(null=True)
+    epss_score = fields.TextField(null=True)
+    epss_percentile = fields.TextField(null=True)
+    exploit_maturity = fields.TextField(null=True)
+    kev_listed = fields.BooleanField(default=False)
+    kev_date_added = fields.DatetimeField(null=True)
+    kev_due_date = fields.DatetimeField(null=True)
+    kev_ransomware = fields.TextField(null=True)
+    exploit_count = fields.IntField(default=0)
+    cpes = fields.JSONField(null=True)
     published_at = fields.DatetimeField(null=True)
     last_modified_at = fields.DatetimeField(null=True)
     fetched_at = fields.DatetimeField()

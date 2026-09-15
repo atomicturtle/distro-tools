@@ -315,6 +315,60 @@ class TestLowestCompatiblePkgs(unittest.TestCase):
         )
         self.assertEqual(picked, [older])
 
+    def test_older_module_version_rejected(self):
+        """RH nginx Sep rebuild must not clone Rocky's May module_version."""
+        older = _pkg(
+            "nginx",
+            "1.24.0",
+            "7.module+el9.8.0+40193+7b2d11e4.1.rocky.0.1",
+            "x86_64",
+            epoch="1",
+        )
+        older.set("module_stream", "1.24")
+        older.set("module_version", "9080020260520105633")
+        newer = _pkg(
+            "nginx",
+            "1.24.0",
+            "7.module+el9.8.0+24846+e7eec568.5.rocky.0.1",
+            "x86_64",
+            epoch="1",
+        )
+        newer.set("module_stream", "1.24")
+        newer.set("module_version", "9080020260908110425")
+        rh = "nginx-1:1.24.0-7.module+el9.8.0+24846+e7eec568.5.x86_64.rpm"
+        rh_mver = "9080020260908110425"
+        self.assertEqual(
+            select_clone_pkgs(
+                rh, [older], rh_module_stream="1.24", rh_module_version=rh_mver
+            ),
+            [],
+        )
+        picked = select_clone_pkgs(
+            rh,
+            [older, newer],
+            rh_module_stream="1.24",
+            rh_module_version=rh_mver,
+        )
+        self.assertEqual(picked, [newer])
+
+    def test_unstamped_module_version_still_matches(self):
+        """Without modules.yaml stamps, keep prior EVR>= behavior."""
+        rocky = _pkg(
+            "nodejs",
+            "16.20.2",
+            "4.module+el8.9.0+1666+930e28e8",
+            "x86_64",
+            epoch="1",
+        )
+        rocky.set("module_stream", "16")
+        picked = select_clone_pkgs(
+            "nodejs-1:16.20.2-4.module+el8.9.0+21536+8fdee1fb.x86_64.rpm",
+            [rocky],
+            rh_module_stream="16",
+            rh_module_version="8090020240312140000",
+        )
+        self.assertEqual(picked, [rocky])
+
 
 class TestSelectClonePkgs(unittest.TestCase):
     def test_prefers_current_stream_over_older_vault(self):

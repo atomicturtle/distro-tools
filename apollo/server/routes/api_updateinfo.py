@@ -174,6 +174,8 @@ def generate_updateinfo_xml(
         ET.SubElement(update, "summary").text = advisory.topic
         ET.SubElement(update, "description").text = advisory.description
         ET.SubElement(update, "solution").text = ""
+        if getattr(advisory, "reboot_suggested", False):
+            ET.SubElement(update, "reboot_suggested").text = "True"
 
         references = ET.SubElement(update, "references")
         for cve in advisory.cves:

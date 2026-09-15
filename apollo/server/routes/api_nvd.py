@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from apollo.db import NvdCve
@@ -23,12 +23,26 @@ class NvdCveResponse(BaseModel):
     cvss_v4_vector: Optional[str] = None
     cwe: Optional[str] = None
     references: Optional[list[dict[str, Any]]] = None
+    epss_score: Optional[str] = None
+    epss_percentile: Optional[str] = None
+    exploit_maturity: Optional[str] = None
+    exploit_count: int = 0
+    kev_listed: bool = False
+    kev_date_added: Optional[str] = None
+    kev_due_date: Optional[str] = None
+    kev_ransomware: Optional[str] = None
+    cpes: Optional[list[str]] = None
     published_at: Optional[str] = None
     last_modified_at: Optional[str] = None
     fetched_at: Optional[str] = None
 
     class Config:
         orm_mode = True
+
+
+class NvdCveListResponse(BaseModel):
+    items: list[NvdCveResponse]
+    missing: list[str] = []
 
 
 def nvd_cve_to_response(row: NvdCve) -> NvdCveResponse:
@@ -48,10 +62,50 @@ def nvd_cve_to_response(row: NvdCve) -> NvdCveResponse:
         cvss_v4_vector=row.cvss_v4_vector,
         cwe=row.cwe,
         references=row.refs,
+        epss_score=row.epss_score,
+        epss_percentile=row.epss_percentile,
+        exploit_maturity=row.exploit_maturity,
+        exploit_count=int(row.exploit_count or 0),
+        kev_listed=bool(row.kev_listed),
+        kev_date_added=_iso(row.kev_date_added),
+        kev_due_date=_iso(row.kev_due_date),
+        kev_ransomware=row.kev_ransomware,
+        cpes=row.cpes,
         published_at=_iso(row.published_at),
         last_modified_at=_iso(row.last_modified_at),
         fetched_at=_iso(row.fetched_at),
     )
+
+
+@router.get("/cves", response_model=NvdCveListResponse)
+async def list_nvd_cves(
+    ids: str = Query(
+        ...,
+        description="Comma-separated CVE IDs (max 100)",
+        examples=["CVE-2021-44228,CVE-2014-0160"],
+    ),
+):
+    """Batch lookup of stored NVD enrichment rows."""
+    raw_ids = [c.strip() for c in ids.split(",") if c.strip()]
+    if not raw_ids:
+        raise HTTPException(status_code=400, detail="ids is required")
+    if len(raw_ids) > 100:
+        raise HTTPException(status_code=400, detail="at most 100 CVE IDs")
+
+    wanted = list(dict.fromkeys(raw_ids))  # preserve order, dedupe
+    upper_map = {c.upper(): c for c in wanted}
+    rows = await NvdCve.filter(cve_id__in=list(upper_map.keys()))
+    by_id = {row.cve_id.upper(): row for row in rows}
+
+    items: list[NvdCveResponse] = []
+    missing: list[str] = []
+    for cve_id in wanted:
+        row = by_id.get(cve_id.upper())
+        if row:
+            items.append(nvd_cve_to_response(row))
+        else:
+            missing.append(cve_id)
+    return NvdCveListResponse(items=items, missing=missing)
 
 
 @router.get("/cves/{cve_id}", response_model=NvdCveResponse)

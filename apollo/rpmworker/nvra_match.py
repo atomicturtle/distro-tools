@@ -10,6 +10,8 @@ Matching order:
    every module stream makes clone fidelity report the newest (el8.10)
    even when vault still has the shipped el8.5 rebuild. RH vs Rocky
    ``.module+`` build IDs are not comparable; EVR >= strips that suffix.
+   Successive rebuilds of the *same* stream are gated by comparing
+   modules.yaml ``module_version`` (reject Rocky older than the RH fix).
    Point-release tags on the same major may differ: Rocky ships RH
    ``el8_6`` openssl as ``el8_10`` (RLSA-2024:7848).
 2. Prefix match (Rocky .rocky.* rebuild suffix on the same NVR), with a
@@ -161,6 +163,28 @@ def _evr_release_for_rh_compare(release: str) -> str:
     return _MODULE_DIST_RE.sub("", release)
 
 
+def _module_version_ok(
+    rh_module_version: str | None,
+    pkg: ET.Element,
+) -> bool:
+    """Reject Rocky modular RPMs whose modules.yaml version is older than RH.
+
+    Koji ``+BUILDID+`` values are not comparable across RH vs Rocky, but
+    ``module_version`` (e.g. ``9080020260908110425``) is. Without a stamp on
+    the XML element the check is skipped so non-modular and unstamped paths
+    keep working.
+    """
+    if not rh_module_version:
+        return True
+    rocky = pkg.get("module_version")
+    if not rocky:
+        return True
+    try:
+        return int(rocky) >= int(rh_module_version)
+    except (TypeError, ValueError):
+        return str(rocky) >= str(rh_module_version)
+
+
 def _lowest_among(pkgs: list[ET.Element]) -> list[ET.Element]:
     """One package per (name, arch): lowest EVR. Caller already filtered."""
     best: dict[tuple[str, str], tuple[tuple[str, str, str], ET.Element]] = {}
@@ -180,15 +204,21 @@ def _lowest_among(pkgs: list[ET.Element]) -> list[ET.Element]:
 def _lowest_per_name_arch(
     rh_nevra: str,
     pkgs: list[ET.Element],
+    rh_module_version: str | None = None,
 ) -> list[ET.Element]:
     return _lowest_among(
-        [pkg for pkg in pkgs if _pkg_satisfies_rh(rh_nevra, pkg)]
+        [
+            pkg for pkg in pkgs
+            if _pkg_satisfies_rh(rh_nevra, pkg)
+            and _module_version_ok(rh_module_version, pkg)
+        ]
     )
 
 
 def lowest_compatible_pkgs(
     rh_nevra: str,
     pkgs: list[ET.Element],
+    rh_module_version: str | None = None,
 ) -> list[ET.Element]:
     """One Rocky XML package per (name, arch): lowest EVR >= RH.
 
@@ -196,8 +226,12 @@ def lowest_compatible_pkgs(
     ``…module+el8.10.0+…`` onto the same key. Dist-major compatibility
     alone would attach both; fidelity then reports the newest rebuild.
     RH vs Rocky ``.module+`` build IDs are stripped before EVR >=.
+    When ``rh_module_version`` is set, Rocky packages stamped with an older
+    modules.yaml version are excluded (nginx May rebuild vs September RHSA).
     """
-    return _lowest_per_name_arch(rh_nevra, pkgs)
+    return _lowest_per_name_arch(
+        rh_nevra, pkgs, rh_module_version=rh_module_version
+    )
 
 
 def select_clone_pkgs(
@@ -205,6 +239,7 @@ def select_clone_pkgs(
     pkgs: list[ET.Element],
     historical_mirror_ids: set[str] | None = None,
     rh_module_stream: str | None = None,
+    rh_module_version: str | None = None,
 ) -> list[ET.Element]:
     """Prefer current-stream hits; vault only when current would jump NVR.
 
@@ -221,6 +256,7 @@ def select_clone_pkgs(
 
     When the RH package names a module stream and XML is stamped from
     modules.yaml, keep that stream only (nodejs 16, not current 20).
+    ``rh_module_version`` rejects older rebuilds of that stream.
     """
     if rh_module_stream:
         stream_pkgs = [
@@ -229,7 +265,11 @@ def select_clone_pkgs(
         ]
         if stream_pkgs:
             pkgs = stream_pkgs
-    ok = [pkg for pkg in pkgs if _pkg_base_ok(rh_nevra, pkg)]
+    ok = [
+        pkg for pkg in pkgs
+        if _pkg_base_ok(rh_nevra, pkg)
+        and _module_version_ok(rh_module_version, pkg)
+    ]
     if not ok:
         return []
     hist = historical_mirror_ids or set()
@@ -245,7 +285,9 @@ def select_clone_pkgs(
         return _lowest_among(cur_stripped or stripped)
     if vault:
         return _lowest_among(current or vault)
-    return _lowest_per_name_arch(rh_nevra, current)
+    return _lowest_per_name_arch(
+        rh_nevra, current, rh_module_version=rh_module_version
+    )
 
 
 def _pkg_evr(pkg: ET.Element) -> tuple[str, str, str] | None:
@@ -280,6 +322,7 @@ def find_nvra_alias(
     *,
     advisory_nevra: str | None = None,
     raw_pkg_nvras: dict[str, list] | None = None,
+    rh_module_version: str | None = None,
 ) -> str | None:
     """
     Map a cleaned advisory NVRA to a cleaned repo NVRA.
@@ -314,6 +357,8 @@ def find_nvra_alias(
         if adv is not None and raw_pkg_nvras:
             pkgs = raw_pkg_nvras.get(pkg_nvra) or []
             if pkgs:
+                if not _module_version_ok(rh_module_version, pkgs[0]):
+                    continue
                 evr = _pkg_evr(pkgs[0])
                 if evr is not None:
                     if not _dist_compatible(adv["release"], evr[2]):
@@ -340,6 +385,8 @@ def find_nvra_alias(
 
         pkgs = raw_pkg_nvras.get(pkg_nvra) or []
         if not pkgs:
+            continue
+        if not _module_version_ok(rh_module_version, pkgs[0]):
             continue
         evr = _pkg_evr(pkgs[0])
         if evr is None:

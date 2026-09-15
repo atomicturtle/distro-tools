@@ -9,7 +9,10 @@ with patch('common.logger.Logger') as mock_logger_class:
     mock_logger_class.return_value = mock_logger
     from apollo.rhcsaf import red_hat_advisory_scraper
 
-from apollo.rhcsaf import extract_rhel_affected_products_for_db
+from apollo.rhcsaf import (
+    extract_rhel_affected_products_for_db,
+    extract_restart_required_flags,
+)
 
 class TestRedHatAdvisoryScraper(unittest.TestCase):
     def setUp(self):
@@ -160,6 +163,8 @@ class TestRedHatAdvisoryScraper(unittest.TestCase):
             ("Red Hat Enterprise Linux", "Red Hat Enterprise Linux for x86_64", 9, 4, "x86_64"),
             result["red_hat_affected_products"]
         )
+        self.assertFalse(result["reboot_suggested"])
+        self.assertFalse(result["restart_suggested"])
 
     def test_preserves_jira_and_bugzilla_document_references(self):
         """CSAF document.references Jira keys must be kept as fix tickets (distro-tools#84)."""
@@ -586,3 +591,63 @@ class TestEUSAdvisoryFiltering(unittest.TestCase):
 
         # Advisory should be filtered out (return None) because all products are EUS
         self.assertIsNone(result)
+
+class TestExtractRestartRequiredFlags(unittest.TestCase):
+    def test_machine_sets_reboot(self):
+        csaf = {
+            "vulnerabilities": [
+                {
+                    "remediations": [
+                        {
+                            "category": "vendor_fix",
+                            "restart_required": {"category": "machine"},
+                        }
+                    ]
+                }
+            ]
+        }
+        self.assertEqual(extract_restart_required_flags(csaf), (True, False))
+
+    def test_service_sets_restart(self):
+        csaf = {
+            "vulnerabilities": [
+                {
+                    "remediations": [
+                        {
+                            "category": "vendor_fix",
+                            "restart_required": {"category": "service"},
+                        }
+                    ]
+                }
+            ]
+        }
+        self.assertEqual(extract_restart_required_flags(csaf), (False, True))
+
+    def test_none_and_missing_are_false(self):
+        csaf = {
+            "vulnerabilities": [
+                {"remediations": [{"category": "vendor_fix"}]},
+                {
+                    "remediations": [
+                        {
+                            "category": "workaround",
+                            "restart_required": {"category": "none"},
+                        }
+                    ]
+                },
+            ]
+        }
+        self.assertEqual(extract_restart_required_flags(csaf), (False, False))
+
+    def test_mixed_categories_set_both(self):
+        csaf = {
+            "vulnerabilities": [
+                {
+                    "remediations": [
+                        {"restart_required": {"category": "service"}},
+                        {"restart_required": {"category": "machine"}},
+                    ]
+                }
+            ]
+        }
+        self.assertEqual(extract_restart_required_flags(csaf), (True, True))

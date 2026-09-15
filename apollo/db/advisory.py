@@ -52,6 +52,7 @@ async def fetch_advisories(
             a.created_at,
             a.updated_at,
             a.published_at,
+            a.rocky_published_at,
             a.name,
             a.synopsis,
             a.description,

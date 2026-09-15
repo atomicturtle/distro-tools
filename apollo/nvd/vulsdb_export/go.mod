@@ -1,0 +1,56 @@
+module github.com/resf/distro-tools/apollo/nvd/vulsdb_export
+
+go 1.26
+
+require (
+	github.com/MaineK00n/vuls-data-update v0.0.0-20260723092544-ef4188f1e44a
+	github.com/MaineK00n/vuls2 v0.0.1-alpha.0.20260729010730-7c9a9f98c44c
+	go.etcd.io/bbolt v1.5.0
+)
+
+require (
+	filippo.io/edwards25519 v1.1.1 // indirect
+	github.com/MaineK00n/go-microsoft-version v0.0.0-20260325021654-1d9206bdeffc // indirect
+	github.com/MaineK00n/go-paloalto-version v0.0.0-20260324210858-f043171ba2bf // indirect
+	github.com/aquasecurity/go-gem-version v0.0.0-20201115065557-8eed6fe000ce // indirect
+	github.com/aquasecurity/go-npm-version v0.0.2 // indirect
+	github.com/aquasecurity/go-pep440-version v0.0.1 // indirect
+	github.com/aquasecurity/go-version v0.0.1 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/glebarez/go-sqlite v1.21.2 // indirect
+	github.com/glebarez/sqlite v1.11.0 // indirect
+	github.com/go-sql-driver/mysql v1.8.1 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/hashicorp/errwrap v1.0.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/hashicorp/go-version v1.9.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.9.2 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/knqyf263/go-apk-version v0.0.0-20200609155635-041fdbb8563f // indirect
+	github.com/knqyf263/go-cpe v0.0.0-20230627041855-cb0794d06872 // indirect
+	github.com/knqyf263/go-deb-version v0.0.0-20230223133812-3ed183d23422 // indirect
+	github.com/knqyf263/go-rpm-version v0.0.0-20220614171824-631e686d1075 // indirect
+	github.com/masahiro331/go-mvn-version v0.0.0-20210429150710-d3157d602a08 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/pandatix/go-cvss v0.6.2 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
+	github.com/redis/rueidis v1.0.76 // indirect
+	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/vulsio/go-fortinet-version v0.0.0-20260629092944-998bd70fcdc5 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
+	gorm.io/driver/mysql v1.6.0 // indirect
+	gorm.io/driver/postgres v1.6.0 // indirect
+	gorm.io/gorm v1.31.1 // indirect
+	modernc.org/libc v1.73.4 // indirect
+	modernc.org/mathutil v1.7.1 // indirect
+	modernc.org/memory v1.11.0 // indirect
+	modernc.org/sqlite v1.53.0 // indirect
+)

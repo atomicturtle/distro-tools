@@ -117,8 +117,10 @@ class Advisory_Pydantic_V2(BaseModel):
     cves: list[Advisory_Pydantic_V2_CVE]
     references: list[str]
     publishedAt: str
+    rockyPublishedAt: Optional[str] = None
     rpms: dict[str, Advisory_Pydantic_V2_RPMs]
     rebootSuggested: bool
+    restartSuggested: bool = False
     buildReferences: list[str]
     source: Optional[Advisory_Pydantic_V2_Source] = None
 
