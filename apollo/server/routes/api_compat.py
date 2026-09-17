@@ -20,6 +20,7 @@ from rssgen.feed import RssGenerator
 from apollo.db import Advisory, RedHatIndexState
 from apollo.db.advisory import fetch_advisories
 from apollo.db.serialize import Advisory_Pydantic_V2, Advisory_Pydantic_V2_CVE, Advisory_Pydantic_V2_Fix, Advisory_Pydantic_V2_RPMs, Advisory_Pydantic_V2_Source
+from apollo.koji.sync import usable_rocky_stamp
 from apollo.server import attribution
 from apollo.server.settings import UI_URL, COMPANY_NAME, MANAGING_EDITOR, get_setting
 
@@ -135,7 +136,10 @@ def v3_advisory_to_v2(
     published_at = advisory.published_at.isoformat("T"
                                                   ).replace("+00:00", "") + "Z"
     rocky_published_at = None
-    rocky = getattr(advisory, "rocky_published_at", None)
+    rocky = usable_rocky_stamp(
+        getattr(advisory, "rocky_published_at", None),
+        advisory.published_at,
+    )
     if rocky is not None:
         rocky_published_at = rocky.isoformat("T").replace("+00:00", "") + "Z"
     severity = advisory.severity.upper()

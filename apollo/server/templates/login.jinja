@@ -56,6 +56,12 @@
           <bx-input required name="confirm_password" type="password" form_id="signup_form">
             <span slot="label-text">Confirm Password</span>
           </bx-input>
+          <bx-input required name="setup_secret" type="password" form_id="signup_form">
+            <span slot="label-text">Setup secret</span>
+          </bx-input>
+          {% if not setup_secret_configured %}
+          <p class="apollo-notification-error">Setup is disabled until APOLLO_SETUP_SECRET is configured.</p>
+          {% endif %}
           <div
             class="apollo-login-controls">
             <bx-btn type="submit" class="apollo-login-button" form_id="signup_form">Create

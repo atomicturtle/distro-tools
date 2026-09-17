@@ -18,8 +18,33 @@
 
   <title>{% block title %}Peridot Apollo{% endblock %}</title>
 
+  <meta name="csrf-token" content="{{ csrf_token }}">
+
   <link rel="stylesheet" href="/static/static.css">
   <script src="/static/static.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var tokenMeta = document.querySelector('meta[name="csrf-token"]');
+      var token = tokenMeta && tokenMeta.getAttribute('content');
+      if (!token) {
+        return;
+      }
+      document.querySelectorAll('form').forEach(function (form) {
+        var method = (form.getAttribute('method') || 'get').toLowerCase();
+        if (method !== 'post') {
+          return;
+        }
+        if (form.querySelector('input[name="csrf_token"]')) {
+          return;
+        }
+        var input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'csrf_token';
+        input.value = token;
+        form.appendChild(input);
+      });
+    });
+  </script>
 
   <style>
     .bx--main {

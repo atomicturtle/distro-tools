@@ -166,20 +166,23 @@ async def get_workflow_status(
 
 
 @router.get("/list", response_model=WorkflowListResponse)
-async def list_workflows(limit: int = 50):
+async def list_workflows(
+    limit: int = 50,
+    user: User = Depends(api_key_or_session_auth),
+):
     """
-    List recent workflows (sanitized for public access).
-    Public endpoint - no authentication required initially.
+    List recent workflows.
+    Requires API key or admin session authentication.
     """
     try:
         service = WorkflowService()
         workflows = await service.list_recent_workflows(limit)
-        
+
         return WorkflowListResponse(
             workflows=workflows,
             total_count=len(workflows)
         )
-        
+
     except Exception as e:
         logger = Logger()
         logger.error(f"Error listing workflows: {str(e)}")

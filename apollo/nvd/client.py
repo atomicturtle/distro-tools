@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import datetime
 import os
 from typing import Any, Optional
 
 import aiohttp
+
+from apollo.nvd import timestamps
 
 NVD_CVE_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
@@ -86,15 +87,6 @@ def parse_nvd_vulnerability(vuln: dict) -> dict[str, Any]:
     published = cve.get("published")
     modified = cve.get("lastModified")
 
-    def _parse_ts(raw: Optional[str]) -> Optional[datetime.datetime]:
-        if not raw:
-            return None
-        # NVD uses ISO-8601 with optional fractional seconds.
-        try:
-            return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-
     return {
         "cve_id": cve_id,
         "description": description,
@@ -106,8 +98,8 @@ def parse_nvd_vulnerability(vuln: dict) -> dict[str, Any]:
         "cvss_v4_vector": cvss_v4_vector,
         "cwe": ", ".join(cwes) if cwes else None,
         "refs": references or None,
-        "published_at": _parse_ts(published),
-        "last_modified_at": _parse_ts(modified),
+        "published_at": timestamps.parse_ts(published),
+        "last_modified_at": timestamps.parse_ts(modified),
     }
 
 

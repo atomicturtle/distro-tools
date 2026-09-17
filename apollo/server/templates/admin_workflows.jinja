@@ -371,32 +371,60 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 const response = await fetch(`/admin/workflows/database/preview-reset?cutoff_date=${cutoffDate}`);
                 const data = await response.json();
+                previewResults.replaceChildren();
+
+                const title = document.createElement('h4');
+                const list = document.createElement('ul');
+                const note = document.createElement('p');
 
                 if (response.ok) {
-                    previewResults.innerHTML = `
-                        <h4>Preview Results:</h4>
-                        <ul>
-                            <li><strong>Cutoff Date:</strong> ${data.cutoff_date}</li>
-                            <li><strong>Red Hat Advisories to Delete:</strong> ${data.red_hat_advisories_count}</li>
-                            <li><strong>Note:</strong> ${data.note}</li>
-                        </ul>
-                        ${data.red_hat_advisories_count > 0 ?
-                          '<p style="color: #dc3545;"><strong>Warning:</strong> This will permanently delete the above records!</p>' :
-                          '<p style="color: #28a745;">No advisories will be deleted with this date.</p>'}
-                    `;
+                    title.textContent = 'Preview Results:';
+                    const items = [
+                        ['Cutoff Date:', data.cutoff_date],
+                        ['Red Hat Advisories to Delete:', data.red_hat_advisories_count],
+                        ['Note:', data.note],
+                    ];
+                    items.forEach(([label, value]) => {
+                        const li = document.createElement('li');
+                        const strong = document.createElement('strong');
+                        strong.textContent = label + ' ';
+                        li.appendChild(strong);
+                        li.appendChild(document.createTextNode(value == null ? '' : String(value)));
+                        list.appendChild(li);
+                    });
+                    if (data.red_hat_advisories_count > 0) {
+                        note.style.color = '#dc3545';
+                        const warn = document.createElement('strong');
+                        warn.textContent = 'Warning: ';
+                        note.appendChild(warn);
+                        note.appendChild(document.createTextNode(
+                            'This will permanently delete the above records!'
+                        ));
+                    } else {
+                        note.style.color = '#28a745';
+                        note.textContent = 'No advisories will be deleted with this date.';
+                    }
+                    previewResults.appendChild(title);
+                    previewResults.appendChild(list);
+                    previewResults.appendChild(note);
                     previewResults.style.display = 'block';
                 } else {
-                    previewResults.innerHTML = `
-                        <h4>Preview Error:</h4>
-                        <p style="color: #dc3545;">${data.detail || 'Failed to preview reset'}</p>
-                    `;
+                    title.textContent = 'Preview Error:';
+                    note.style.color = '#dc3545';
+                    note.textContent = data.detail || 'Failed to preview reset';
+                    previewResults.appendChild(title);
+                    previewResults.appendChild(note);
                     previewResults.style.display = 'block';
                 }
             } catch (error) {
-                previewResults.innerHTML = `
-                    <h4>Preview Error:</h4>
-                    <p style="color: #dc3545;">Failed to connect to server: ${error.message}</p>
-                `;
+                previewResults.replaceChildren();
+                const title = document.createElement('h4');
+                title.textContent = 'Preview Error:';
+                const note = document.createElement('p');
+                note.style.color = '#dc3545';
+                note.textContent = 'Failed to connect to server: ' + (error && error.message ? error.message : 'unknown error');
+                previewResults.appendChild(title);
+                previewResults.appendChild(note);
                 previewResults.style.display = 'block';
             } finally {
                 previewBtn.disabled = false;

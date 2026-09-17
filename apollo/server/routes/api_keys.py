@@ -9,7 +9,11 @@ from pydantic import BaseModel
 
 from apollo.db import APIKey, User
 from apollo.server.utils import admin_user_scheme
-from apollo.server.auth import generate_api_key, get_api_key_prefix
+from apollo.server.auth import (
+    generate_api_key,
+    get_api_key_prefix,
+    normalize_api_key_permissions,
+)
 from common.logger import Logger
 
 router = APIRouter(tags=["api-keys"])
@@ -65,18 +69,26 @@ async def create_api_key(
         if request.expires_days:
             expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=request.expires_days)
         
+        try:
+            permissions = normalize_api_key_permissions(request.permissions)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
+
         # Create API key record
         api_key = await APIKey.create(
             name=request.name,
             key_hash=key_hash,
             key_prefix=key_prefix,
             user_id=user.id,
-            permissions=request.permissions,
+            permissions=permissions,
             expires_at=expires_at
         )
         
         logger = Logger()
-        logger.info(f"User {user.email} created API key '{request.name}' with permissions {request.permissions}")
+        logger.info(f"User {user.email} created API key '{request.name}' with permissions {permissions}")
         
         # Return response with actual key (only time it's shown)
         return APIKeyCreateResponse(

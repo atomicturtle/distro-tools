@@ -1,3 +1,4 @@
+import os
 import secrets
 
 from tortoise import Tortoise
@@ -33,6 +34,8 @@ from apollo.server.routes.api_vex import router as api_vex_router
 from apollo.server.routes.api_nvd import router as api_nvd_router
 from apollo.server.settings import SECRET_KEY, SettingsMiddleware, get_setting
 from apollo.server.utils import admin_user_scheme, user_scheme, templates
+from apollo.server.csrf import CSRFMiddleware
+from apollo.server.redirects import safe_relative_redirect
 from apollo.db import Settings
 
 from common.info import Info
@@ -41,7 +44,13 @@ from common.database import Database
 from common.temporal import Temporal
 from common.fastapi import StaticFilesSym, RenderErrorTemplateException
 
-app = FastAPI()
+_IS_PRODUCTION = os.environ.get("ENV", "development").lower() == "production"
+
+app = FastAPI(
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
+)
 
 # Global Temporal client instance
 temporal_client = None
@@ -140,15 +149,14 @@ async def health():
 async def set_color(request: Request):
     valid_colors = ["dark", "light"]
     color = request.query_params.get("color")
-    response = RedirectResponse(
-        request.headers["referer"] if "referer" in request.headers else "/"
-    )
+    redirect_to = safe_relative_redirect(request.headers.get("referer"))
+    response = RedirectResponse(redirect_to)
 
     # First check if the color is valid
     # If valid, set the color in the cookie, then
     # redirect back to referrer
     if color in valid_colors:
-        response.set_cookie("color", color)
+        response.set_cookie("color", color, samesite="lax")
 
     return response
 
@@ -191,11 +199,14 @@ async def startup():
         secret_key = secrets.token_hex(32)
         await Settings.create(name=SECRET_KEY, value=secret_key)
 
-    # Mount SessionMiddleware
+    # Middleware is LIFO: Session must wrap CSRF so session exists for token checks.
+    app.add_middleware(CSRFMiddleware)
     app.add_middleware(
         SessionMiddleware,
         secret_key=secret_key,
         max_age=60 * 60 * 24 * 7,  # 1 week
+        same_site="lax",
+        https_only=True,
     )
 
     # Initialize Temporal client for workflow management

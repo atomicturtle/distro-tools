@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import time
 from typing import Any, Optional
 
@@ -12,6 +13,31 @@ from apollo.koji.nvr import rpm_nvras_from_nevras, source_nvrs_from_nevras
 
 def _nevras(advisory: Advisory) -> list[str]:
     return [pkg.nevra for pkg in advisory.packages if getattr(pkg, "nevra", None)]
+
+
+def _as_utc(value: datetime.datetime) -> datetime.datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=datetime.timezone.utc)
+    return value
+
+
+def usable_rocky_stamp(
+    stamp: Optional[datetime.datetime],
+    published_at: Optional[datetime.datetime],
+) -> Optional[datetime.datetime]:
+    """Return ``stamp`` only when it can mean "Rocky published this erratum".
+
+    Koji completion of EVR>= matches can predate ``published_at`` (copied from
+    RH ``red_hat_issued_at``), especially for modular rebuilds. A Rocky publish
+    time before the upstream advisory must never be stored or shown.
+    """
+    if stamp is None:
+        return None
+    if published_at is None:
+        return stamp
+    if _as_utc(stamp) < _as_utc(published_at):
+        return None
+    return stamp
 
 
 def lookup_completion(
@@ -29,8 +55,8 @@ def lookup_completion(
         stamp = cache[nvr]
         if stamp is not None:
             times.append(stamp)
-    # Use the latest completion: modular advisories often reuse older
-    # companion builds; min() made "Rocky published" predate the fix NVR.
+    # Latest completion: modular advisories often reuse older companion builds;
+    # min() made "Rocky published" predate the fix NVR.
     if times:
         return max(times)
     for nvra in rpm_nvras_from_nevras(nevras)[:4]:
@@ -45,6 +71,26 @@ def lookup_completion(
     if times:
         return max(times)
     return None
+
+
+async def clear_rocky_before_upstream(
+    *,
+    name: Optional[str] = None,
+) -> int:
+    """Null out ``rocky_published_at`` values that predate ``published_at``."""
+    query = Advisory.filter(rocky_published_at__isnull=False)
+    if name:
+        query = query.filter(name=name)
+    cleared = 0
+    async for advisory in query:
+        if (
+            usable_rocky_stamp(advisory.rocky_published_at, advisory.published_at)
+            is None
+        ):
+            advisory.rocky_published_at = None
+            await advisory.save(update_fields=["rocky_published_at"])
+            cleared += 1
+    return cleared
 
 
 async def sync_rocky_published_at(
@@ -67,11 +113,17 @@ async def sync_rocky_published_at(
     ids = await query.values_list("id", flat=True)
     client = KojiClient(hub=hub)
     cache: dict[str, Optional[Any]] = {}
-    counts = {"candidates": 0, "updated": 0, "missing": 0, "errors": 0}
+    counts = {
+        "candidates": 0,
+        "updated": 0,
+        "missing": 0,
+        "rejected_before_upstream": 0,
+        "errors": 0,
+    }
 
     batch_size = 25
     for offset in range(0, len(ids), batch_size):
-        batch_ids = ids[offset:offset + batch_size]
+        batch_ids = ids[offset : offset + batch_size]
         advisories = await Advisory.filter(id__in=batch_ids).prefetch_related(
             "packages"
         )
@@ -82,7 +134,7 @@ async def sync_rocky_published_at(
                 continue
             counts["candidates"] += 1
             try:
-                stamp = lookup_completion(
+                raw = lookup_completion(
                     client,
                     _nevras(advisory),
                     cache,
@@ -91,8 +143,17 @@ async def sync_rocky_published_at(
             except Exception:
                 counts["errors"] += 1
                 continue
-            if stamp is None:
+            if raw is None:
                 counts["missing"] += 1
+                continue
+            stamp = usable_rocky_stamp(raw, advisory.published_at)
+            if stamp is None:
+                counts["rejected_before_upstream"] += 1
+                if advisory.rocky_published_at is not None:
+                    advisory.rocky_published_at = None
+                    await advisory.save(update_fields=["rocky_published_at"])
+                continue
+            if advisory.rocky_published_at == stamp:
                 continue
             advisory.rocky_published_at = stamp
             await advisory.save(update_fields=["rocky_published_at"])

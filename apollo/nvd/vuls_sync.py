@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 import json
 import os
 import subprocess
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from apollo.db import NvdCve
+from apollo.nvd import timestamps
 from apollo.nvd.sync import known_cve_ids, upsert_nvd_row
 
 
@@ -19,19 +19,6 @@ DEFAULT_HELPER = os.environ.get(
     "VULSDB_NVD_EXPORT",
     str(Path(__file__).resolve().parent / "vulsdb_export" / "vulsdb-nvd-export"),
 )
-
-
-def _parse_ts(raw: Any) -> Optional[datetime.datetime]:
-    if raw is None:
-        return None
-    if isinstance(raw, datetime.datetime):
-        return raw
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def row_from_export(obj: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -62,12 +49,12 @@ def row_from_export(obj: dict[str, Any]) -> Optional[dict[str, Any]]:
         "exploit_maturity": obj.get("exploit_maturity"),
         "exploit_count": int(obj.get("exploit_count") or 0),
         "kev_listed": bool(obj.get("kev_listed")),
-        "kev_date_added": _parse_ts(obj.get("kev_date_added")),
-        "kev_due_date": _parse_ts(obj.get("kev_due_date")),
+        "kev_date_added": timestamps.parse_ts(obj.get("kev_date_added")),
+        "kev_due_date": timestamps.parse_ts(obj.get("kev_due_date")),
         "kev_ransomware": obj.get("kev_ransomware"),
         "cpes": cpes if cpes else None,
-        "published_at": _parse_ts(obj.get("published_at")),
-        "last_modified_at": _parse_ts(obj.get("last_modified_at")),
+        "published_at": timestamps.parse_ts(obj.get("published_at")),
+        "last_modified_at": timestamps.parse_ts(obj.get("last_modified_at")),
     }
 
 
@@ -77,6 +64,7 @@ async def sync_from_vuls_db(
     helper: str = DEFAULT_HELPER,
     limit: Optional[int] = None,
     only_missing: bool = False,
+    only_missing_dates: bool = False,
     cve_ids: Optional[Iterable[str]] = None,
 ) -> dict:
     """Pipe known CVE IDs through ``vulsdb-nvd-export`` and upsert rows."""
@@ -88,6 +76,11 @@ async def sync_from_vuls_db(
     if only_missing:
         have = set(await NvdCve.all().values_list("cve_id", flat=True))
         ids = [c for c in ids if c not in have]
+    elif only_missing_dates:
+        need = set(
+            await NvdCve.filter(published_at=None).values_list("cve_id", flat=True)
+        )
+        ids = [c for c in ids if c in need]
     if limit is not None:
         ids = ids[:limit]
 

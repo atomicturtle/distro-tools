@@ -39,6 +39,7 @@ async def _run(args: argparse.Namespace) -> int:
             helper=args.helper,
             limit=args.limit,
             only_missing=args.only_missing,
+            only_missing_dates=args.only_missing_dates,
         )
     else:
         from apollo.nvd.sync import sync_known_cves
@@ -93,7 +94,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--only-missing-dates",
         action="store_true",
-        help="Only NIST-refresh rows that already exist but lack published_at",
+        help=(
+            "Only refresh rows that already exist but lack published_at "
+            "(vuls.db or NIST path)"
+        ),
     )
     parser.add_argument(
         "--api-key",

@@ -4,7 +4,7 @@ API Key authentication utilities
 import secrets
 import hashlib
 import datetime
-from typing import Optional
+from typing import Iterable, List, Optional
 
 from fastapi import Request, HTTPException, status
 from passlib.context import CryptContext
@@ -15,6 +15,31 @@ from common.fastapi import RenderErrorTemplateException
 
 # Context for hashing API keys
 api_key_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+ALLOWED_API_KEY_PERMISSIONS = frozenset({"workflow:trigger", "workflow:status"})
+
+
+def normalize_api_key_permissions(permissions: Iterable[str]) -> List[str]:
+    """Allowlist permissions; reject wildcards and unknown values."""
+    normalized: List[str] = []
+    seen = set()
+    for permission in permissions or []:
+        if not isinstance(permission, str):
+            raise ValueError("API key permissions must be strings")
+        value = permission.strip()
+        if not value:
+            continue
+        if value == "*" or value not in ALLOWED_API_KEY_PERMISSIONS:
+            raise ValueError(
+                f"Invalid API key permission: {permission}. "
+                f"Allowed: {', '.join(sorted(ALLOWED_API_KEY_PERMISSIONS))}"
+            )
+        if value not in seen:
+            seen.add(value)
+            normalized.append(value)
+    if not normalized:
+        raise ValueError("At least one valid API key permission is required")
+    return normalized
 
 
 def generate_api_key() -> tuple[str, str]:
@@ -119,9 +144,13 @@ async def api_key_auth(request: Request, required_permission: str = None) -> Use
             detail="Invalid API key"
         )
     
-    # Check permissions if required
+    # Check permissions if required (no wildcard privilege escalation)
     if required_permission:
-        if required_permission not in api_key.permissions and "*" not in api_key.permissions:
+        permissions = [
+            p for p in (api_key.permissions or [])
+            if isinstance(p, str) and p in ALLOWED_API_KEY_PERMISSIONS
+        ]
+        if required_permission not in permissions:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key does not have required permission: {required_permission}"

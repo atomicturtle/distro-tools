@@ -5,6 +5,10 @@
     ENV=production DB_USER=apollo \\
       PYTHONPATH=. ~/apollo/venv/bin/python -m apollo.koji.cli \\
       --name RLSA-2026:9693
+
+Clear stamps that predate upstream issue time (idempotent)::
+
+    ... -m apollo.koji.cli --clear-before-upstream
 """
 
 from __future__ import annotations
@@ -26,9 +30,15 @@ async def _run(args: argparse.Namespace) -> int:
     db = Database(initialize=True)
     await db.init(["apollo.db"])
 
-    from apollo.koji.sync import sync_rocky_published_at
+    from apollo.koji import sync as koji_sync
 
-    counts = await sync_rocky_published_at(
+    if args.clear_before_upstream:
+        cleared = await koji_sync.clear_rocky_before_upstream(name=args.name)
+        print({"cleared_before_upstream": cleared})
+        await Tortoise.close_connections()
+        return 0
+
+    counts = await koji_sync.sync_rocky_published_at(
         name=args.name,
         limit=args.limit,
         only_missing=not args.refresh,
@@ -48,6 +58,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--refresh",
         action="store_true",
         help="Re-query Koji even when rocky_published_at is already set",
+    )
+    parser.add_argument(
+        "--clear-before-upstream",
+        action="store_true",
+        help=(
+            "Null rocky_published_at when it predates published_at "
+            "(RH issue time); do not query Koji"
+        ),
     )
     parser.add_argument(
         "--sleep",

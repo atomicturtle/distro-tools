@@ -45,7 +45,11 @@ class MockAPIKey:
         self.key_hash = key_hash
         self.key_prefix = get_api_key_prefix(raw_key)
         self.user_id = 1
-        self.permissions = permissions or ["workflow:trigger", "workflow:status"]
+        self.permissions = (
+            list(permissions)
+            if permissions is not None
+            else ["workflow:trigger", "workflow:status"]
+        )
         self.expires_at = expires_at
         self.last_used_at = None
         self.revoked_at = revoked_at
@@ -108,14 +112,17 @@ class TestAPIKeyAuth(unittest.TestCase):
         mock_verify.assert_called_once_with(self.raw_key)
 
     @patch("apollo.server.auth.verify_api_key")
-    def test_authentication_with_wildcard_permission(self, mock_verify):
-        """Test authentication with wildcard permission."""
+    def test_authentication_with_wildcard_permission_rejected(self, mock_verify):
+        """Wildcard permissions are ignored; required permission must be explicit."""
+        from fastapi import HTTPException
+
         wildcard_api_key = MockAPIKey(self.raw_key, permissions=["*"])
         mock_verify.return_value = wildcard_api_key
 
-        result = asyncio.run(api_key_auth(self.mock_request, "any:permission"))
+        with self.assertRaises(HTTPException) as context:
+            asyncio.run(api_key_auth(self.mock_request, "workflow:trigger"))
 
-        self.assertEqual(result, wildcard_api_key.user)
+        self.assertEqual(context.exception.status_code, 403)
 
     def test_missing_authorization_header(self):
         """Test authentication failure when Authorization header is missing."""
@@ -430,9 +437,9 @@ class TestAuthenticationEdgeCases(unittest.TestCase):
             # (user_permissions, required_permission, should_succeed)
             (["workflow:trigger"], "workflow:trigger", True),
             (["workflow:trigger"], "workflow:status", False),
-            (["*"], "any:permission", True),
+            (["*"], "workflow:trigger", False),
             (["workflow:trigger", "workflow:status"], "workflow:trigger", True),
-            ([], "any:permission", False),
+            ([], "workflow:trigger", False),
             (["workflow:trigger"], "WORKFLOW:TRIGGER", False),  # Case sensitive
             (["workflow:trigger"], "workflow", False),  # Exact match required
         ]

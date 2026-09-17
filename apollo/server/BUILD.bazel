@@ -6,8 +6,10 @@ py_library(
     srcs = [
         "attribution.py",
         "auth.py",
+        "csrf.py",
         "models/__init__.py",
         "models/workflow.py",
+        "redirects.py",
         "roles.py",
         "routes/admin_api_keys.py",
         "routes/admin_index.py",

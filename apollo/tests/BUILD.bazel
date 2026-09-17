@@ -141,3 +141,24 @@ py_test(
         "//apollo/rpm_helpers:rpm_helpers_lib",
     ],
 )
+
+py_test(
+    name = "test_redirects",
+    srcs = ["test_redirects.py"],
+    deps = [
+        "//apollo/server:server_lib",
+    ],
+)
+
+py_test(
+    name = "test_static_files_sym",
+    srcs = ["test_static_files_sym.py"],
+    deps = [
+        "//common:common_lib",
+    ],
+)
+
+py_test(
+    name = "test_login_setup_secret",
+    srcs = ["test_login_setup_secret.py"],
+)

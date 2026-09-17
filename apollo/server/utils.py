@@ -6,6 +6,7 @@ import os
 from apollo.db import User
 from apollo.server import attribution
 from apollo.server.roles import ADMIN
+from apollo.server.csrf import ensure_csrf_token
 
 from common.fastapi import RenderErrorTemplateException
 
@@ -14,7 +15,15 @@ import jinja2  # noqa # pylint: disable=unused-import
 import multipart  # noqa # pylint: disable=unused-import
 import itsdangerous  # noqa # pylint: disable=unused-import
 
-templates = Jinja2Templates(directory="apollo/server/templates")
+
+def _csrf_context(request: Request) -> dict:
+    return {"csrf_token": ensure_csrf_token(request)}
+
+
+templates = Jinja2Templates(
+    directory="apollo/server/templates",
+    context_processors=[_csrf_context],
+)
 
 # Add global function to templates for environment information
 def get_environment_info():

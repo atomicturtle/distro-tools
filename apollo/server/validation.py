@@ -5,9 +5,11 @@ This module provides centralized validation logic with regex patterns and enums
 to ensure consistent validation standards across the application.
 """
 
+import ipaddress
 import re
 from enum import Enum
 from typing import Optional, Dict, Any, List, Tuple
+from urllib.parse import urlparse
 
 
 class Architecture(str, Enum):
@@ -142,6 +144,46 @@ class FieldValidator:
         if not ValidationPatterns.URL_PATTERN.match(trimmed_url):
             raise ValidationError(
                 f"{field_name} must start with http:// or https://",
+                ValidationErrorType.INVALID_URL,
+                field_name.lower().replace(" ", "_"),
+            )
+
+        parsed = urlparse(trimmed_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValidationError(
+                f"{field_name} must be a valid http(s) URL with a hostname",
+                ValidationErrorType.INVALID_URL,
+                field_name.lower().replace(" ", "_"),
+            )
+
+        host = parsed.hostname.lower().rstrip(".")
+        if (
+            host == "localhost"
+            or host.endswith(".localhost")
+            or host.endswith(".local")
+            or host == "metadata.google.internal"
+            or host == "metadata"
+        ):
+            raise ValidationError(
+                f"{field_name} must not target localhost or metadata endpoints",
+                ValidationErrorType.INVALID_URL,
+                field_name.lower().replace(" ", "_"),
+            )
+
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None and (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise ValidationError(
+                f"{field_name} must not target private or link-local addresses",
                 ValidationErrorType.INVALID_URL,
                 field_name.lower().replace(" ", "_"),
             )

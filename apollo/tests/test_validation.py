@@ -182,6 +182,10 @@ class TestFieldValidator(unittest.TestCase):
             ("example.com", ValidationErrorType.INVALID_URL),  # Missing protocol
             ("ftp://example.com", ValidationErrorType.INVALID_URL),  # Wrong protocol
             ("http://", ValidationErrorType.INVALID_URL),  # Incomplete URL
+            ("http://localhost/repo", ValidationErrorType.INVALID_URL),
+            ("https://127.0.0.1/repo", ValidationErrorType.INVALID_URL),
+            ("http://169.254.169.254/latest", ValidationErrorType.INVALID_URL),
+            ("https://10.0.0.5/repo", ValidationErrorType.INVALID_URL),
         ]
 
         for invalid_url, expected_error_type in test_cases:

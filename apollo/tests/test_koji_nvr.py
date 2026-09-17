@@ -1,5 +1,6 @@
-"""Unit tests for Koji NVR mapping."""
+"""Unit tests for Koji NVR mapping and rocky publish stamp guards."""
 
+import datetime
 import unittest
 
 from apollo.koji.nvr import (
@@ -7,6 +8,7 @@ from apollo.koji.nvr import (
     rpm_nvras_from_nevras,
     source_nvrs_from_nevras,
 )
+from apollo.koji.sync import usable_rocky_stamp
 
 
 class TestKojiNvr(unittest.TestCase):
@@ -32,6 +34,25 @@ class TestKojiNvr(unittest.TestCase):
             ["bash-0:5.1.8-6.el9.x86_64.rpm"]
         )
         self.assertEqual(nvras, ["bash-5.1.8-6.el9.x86_64"])
+
+
+class TestUsableRockyStamp(unittest.TestCase):
+    def test_rejects_stamp_before_upstream(self):
+        upstream = datetime.datetime(2026, 3, 24, 10, 56, 42, tzinfo=datetime.timezone.utc)
+        early = datetime.datetime(2026, 2, 10, 16, 46, 5, tzinfo=datetime.timezone.utc)
+        self.assertIsNone(usable_rocky_stamp(early, upstream))
+
+    def test_accepts_stamp_on_or_after_upstream(self):
+        upstream = datetime.datetime(2026, 3, 24, 10, 56, 42, tzinfo=datetime.timezone.utc)
+        same = upstream
+        later = datetime.datetime(2026, 3, 25, 0, 0, 0, tzinfo=datetime.timezone.utc)
+        self.assertEqual(usable_rocky_stamp(same, upstream), same)
+        self.assertEqual(usable_rocky_stamp(later, upstream), later)
+
+    def test_naive_compared_as_utc(self):
+        upstream = datetime.datetime(2026, 3, 24, 10, 56, 42)
+        early = datetime.datetime(2026, 2, 10, 16, 46, 5, tzinfo=datetime.timezone.utc)
+        self.assertIsNone(usable_rocky_stamp(early, upstream))
 
 
 if __name__ == "__main__":

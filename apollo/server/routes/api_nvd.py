@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -49,6 +50,8 @@ def nvd_cve_to_response(row: NvdCve) -> NvdCveResponse:
     def _iso(dt):
         if dt is None:
             return None
+        if isinstance(dt, datetime) and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         return dt.isoformat("T").replace("+00:00", "Z")
 
     return NvdCveResponse(

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from tortoise.expressions import Q
+import os
+import secrets
 
 from apollo.server.utils import templates
 from apollo.server.roles import ADMIN
@@ -9,6 +11,8 @@ from apollo.server.settings import OIDC_PROVIDER_NAME, OIDC_PROVIDER, OIDC_CLIEN
 from apollo.db import User, Settings
 
 router = APIRouter(tags=["non-api"])
+
+SETUP_SECRET_ENV = "APOLLO_SETUP_SECRET"
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -22,6 +26,7 @@ async def login_page(request: Request):
     ctx = {
         "request": request,
         "should_show_setup": should_show_setup,
+        "setup_secret_configured": bool(os.environ.get(SETUP_SECRET_ENV)),
     }
     if not should_show_setup:
         # Check if we have OIDC_PROVIDER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET set
@@ -93,13 +98,21 @@ async def setup_page(
     email: str = Form(default=None),
     password: str = Form(default=None),
     confirm_password: str = Form(default=None),
+    setup_secret: str = Form(default=None),
 ):
     user_count = await User.all().count()
     if user_count > 0:
         return RedirectResponse("/")
 
+    expected_secret = os.environ.get(SETUP_SECRET_ENV)
     error = None
-    if not name:
+    if not expected_secret:
+        error = "Setup disabled: APOLLO_SETUP_SECRET is not configured"
+    elif not setup_secret or not secrets.compare_digest(
+        setup_secret, expected_secret
+    ):
+        error = "Invalid setup secret"
+    elif not name:
         error = "Name is required"
     elif not email:
         error = "Email is required"
@@ -117,6 +130,7 @@ async def setup_page(
             "login.jinja", {
                 "request": request,
                 "should_show_setup": True,
+                "setup_secret_configured": bool(expected_secret),
                 "error": error,
             }
         )

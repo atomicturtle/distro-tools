@@ -56,12 +56,12 @@ async def sync_cve_ids(
         sleep_seconds = 0.7 if key else 6.5
 
     counts = {"fetched": 0, "upserted": 0, "missing": 0, "errors": 0}
-    timeout = aiohttp.ClientTimeout(total=60)
+    timeout = aiohttp.ClientTimeout(total=120)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for cve_id in cve_ids:
             try:
                 fields = await fetch_nvd_cve(session, cve_id, api_key=key)
-            except NvdApiError:
+            except (NvdApiError, asyncio.TimeoutError, aiohttp.ClientError):
                 counts["errors"] += 1
                 await asyncio.sleep(sleep_seconds)
                 continue

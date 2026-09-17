@@ -13,11 +13,15 @@ class StaticFilesSym(StaticFiles):
     "subclass StaticFiles middleware to allow symlinks"
     def lookup_path(self, path):
         for directory in self.all_directories:
+            directory_real = os.path.realpath(directory)
             full_path = os.path.realpath(os.path.join(directory, path))
             try:
+                # Jail resolved paths (including symlink targets) under the mount root.
+                if os.path.commonpath([full_path, directory_real]) != directory_real:
+                    continue
                 stat_result = os.stat(full_path)
                 return (full_path, stat_result)
-            except FileNotFoundError:
+            except (FileNotFoundError, ValueError):
                 pass
         return ("", None)
 
