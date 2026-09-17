@@ -2,6 +2,7 @@ import gzip
 import lzma
 import re
 import defusedxml.ElementTree as ET
+from xml.etree.ElementTree import Element
 from urllib.parse import urljoin, urlparse
 from os import path
 
@@ -25,7 +26,7 @@ _MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
-def clean_nvra_pkg(matching_pkg: ET.Element) -> tuple[str, str]:
+def clean_nvra_pkg(matching_pkg: Element) -> tuple[str, str]:
     name = matching_pkg.find("{http://linux.duke.edu/metadata/common}name").text
     version = matching_pkg.find(
         "{http://linux.duke.edu/metadata/common}version"
@@ -89,7 +90,7 @@ async def _fetch_bytes(url: str) -> bytes:
 
 async def download_xml(
     url: str, gz: bool = False, xz: bool = False
-) -> ET.Element:
+) -> Element:
     raw = await _fetch_bytes(url)
     if gz:
         return ET.fromstring(gzip.decompress(raw).decode("utf-8"))
@@ -110,7 +111,7 @@ async def download_yaml(url: str, gz: bool = False, xz: bool = False) -> any:
 async def get_data_from_repomd(
     url: str,
     data_type: str,
-    el: ET.Element,
+    el: Element,
     is_yaml=False,
 ):
     # There is a top-most repomd element in repomd

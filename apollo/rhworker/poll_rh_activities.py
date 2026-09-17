@@ -3,6 +3,7 @@ import re
 import bz2
 from typing import Optional
 import defusedxml.ElementTree as ET
+from xml.etree.ElementTree import Element
 import csv
 import io
 from datetime import datetime, timedelta, timezone
@@ -350,7 +351,7 @@ async def get_last_indexed_date() -> Optional[str]:
     )
 
 
-async def fetch_mapped_oval() -> dict[str, ET.ElementTree]:
+async def fetch_mapped_oval() -> dict[str, Element]:
     # Download the oval_url using aiohttp, decompress using bzip and parse
     oval_urls = (
         'https://access.redhat.com/security/data/oval/v2/RHEL8/rhel-8.oval.xml.bz2',
