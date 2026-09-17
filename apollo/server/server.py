@@ -8,8 +8,9 @@ from fastapi import FastAPI, Request, Depends
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi_pagination import add_pagination
+
+from apollo.server.proxy_headers import ProxyHeadersMiddleware
 
 from apollo.server.routes.advisories import router as advisories_router
 from apollo.server.routes.statistics import router as statistics_router

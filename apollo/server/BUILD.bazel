@@ -7,6 +7,7 @@ py_library(
         "attribution.py",
         "auth.py",
         "csrf.py",
+        "proxy_headers.py",
         "models/__init__.py",
         "models/workflow.py",
         "redirects.py",
