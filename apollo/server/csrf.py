@@ -25,6 +25,8 @@ _PROTECTED_PREFIXES = (
 _MULTIPART_TOKEN = re.compile(
     rb'name="csrf_token"\s*(?:; ?filename="[^"]*")?\s*\r\n(?:[^\r\n]+:[^\r\n]*\r\n)*\r\n([^\r\n]*)'
 )
+# Cap buffered body size on CSRF-protected POSTs (e.g. config uploads).
+MAX_CSRF_BUFFER = 25 * 1024 * 1024
 
 
 def ensure_csrf_token(request: Request) -> str:
@@ -82,9 +84,11 @@ class CSRFMiddleware:
         self,
         app,
         protected_prefixes: Iterable[str] = _PROTECTED_PREFIXES,
+        max_body_bytes: int = MAX_CSRF_BUFFER,
     ):
         self.app = app
         self.protected_prefixes = tuple(protected_prefixes)
+        self.max_body_bytes = max_body_bytes
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -104,11 +108,20 @@ class CSRFMiddleware:
             return
 
         chunks = []
+        buffered = 0
         more_body = True
         while more_body:
             message = await receive()
             if message["type"] == "http.request":
-                chunks.append(message.get("body", b""))
+                chunk = message.get("body", b"")
+                buffered += len(chunk)
+                if buffered > self.max_body_bytes:
+                    response = PlainTextResponse(
+                        "Request entity too large", status_code=413
+                    )
+                    await response(scope, receive, send)
+                    return
+                chunks.append(chunk)
                 more_body = message.get("more_body", False)
             elif message["type"] == "http.disconnect":
                 await self.app(scope, receive, send)
