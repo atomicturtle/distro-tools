@@ -1,11 +1,12 @@
 import gzip
 import lzma
 import re
-from xml.etree import ElementTree as ET
-from urllib.parse import urlparse
+import defusedxml.ElementTree as ET
+from urllib.parse import urljoin, urlparse
 from os import path
 
 from apollo.rpm_helpers import parse_nevra
+from common.ssrf import assert_safe_http_url
 
 import aiohttp
 import yaml
@@ -19,6 +20,9 @@ NEVRA_RE = re.compile(
 EPOCH_RE = re.compile(r"(\d+):")
 DIST_RE = re.compile(r"(\.el\d+(?:_\d+|))")
 MODULE_DIST_RE = re.compile(r"\.module.+$")
+
+_MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 def clean_nvra_pkg(matching_pkg: ET.Element) -> tuple[str, str]:
@@ -63,41 +67,44 @@ def clean_nvra(nvra_raw: str) -> tuple[str, str]:
     return cleaned, raw
 
 
+async def _fetch_bytes(url: str) -> bytes:
+    """GET url after SSRF checks; re-validate every redirect hop."""
+    current = assert_safe_http_url(url)
+    async with aiohttp.ClientSession() as session:
+        for _ in range(_MAX_REDIRECTS + 1):
+            async with session.get(current, allow_redirects=False) as resp:
+                if resp.status in _REDIRECT_STATUSES:
+                    location = resp.headers.get("Location")
+                    if not location:
+                        raise Exception(
+                            f"Redirect from {current} missing Location header"
+                        )
+                    current = assert_safe_http_url(urljoin(current, location))
+                    continue
+                if resp.status != 200:
+                    raise Exception(f"Failed to get {current}: {resp.status}")
+                return await resp.read()
+    raise Exception(f"Too many redirects fetching {url}")
+
+
 async def download_xml(
     url: str, gz: bool = False, xz: bool = False
 ) -> ET.Element:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                raise Exception(f"Failed to get {url}: {resp.status}")
-            # Do an in memory gzip decompression if gz is set
-            if gz:
-                return ET.fromstring(
-                    gzip.decompress(await resp.read()).decode("utf-8")
-                )
-            elif xz:
-                return ET.fromstring(
-                    lzma.decompress(await resp.read()).decode("utf-8")
-                )
-            return ET.fromstring(await resp.text())
+    raw = await _fetch_bytes(url)
+    if gz:
+        return ET.fromstring(gzip.decompress(raw).decode("utf-8"))
+    if xz:
+        return ET.fromstring(lzma.decompress(raw).decode("utf-8"))
+    return ET.fromstring(raw.decode("utf-8"))
 
 
 async def download_yaml(url: str, gz: bool = False, xz: bool = False) -> any:
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                raise Exception(f"Failed to get {url}: {resp.status}")
-            # Do an in memory gzip decompression if gz is set
-            if gz:
-                return yaml.full_load_all(
-                    gzip.decompress(await resp.read()).decode("utf-8")
-                )
-            elif xz:
-                return yaml.full_load_all(
-                    lzma.decompress(await resp.read()).decode("utf-8")
-                )
-
-            return yaml.full_load_all(await resp.text())
+    raw = await _fetch_bytes(url)
+    if gz:
+        return list(yaml.safe_load_all(gzip.decompress(raw).decode("utf-8")))
+    if xz:
+        return list(yaml.safe_load_all(lzma.decompress(raw).decode("utf-8")))
+    return list(yaml.safe_load_all(raw.decode("utf-8")))
 
 
 async def get_data_from_repomd(

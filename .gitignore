@@ -12,4 +12,5 @@ personal_work_dir
 *.log
 CLAUDE.md
 temp/
+.apollo_session_secret
 apollo/nvd/vulsdb_export/vulsdb-nvd-export

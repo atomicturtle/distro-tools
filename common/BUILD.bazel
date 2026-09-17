@@ -8,6 +8,7 @@ py_library(
         "fastapi.py",
         "info.py",
         "logger.py",
+        "ssrf.py",
         "temporal.py",
         "testing.py",
     ],

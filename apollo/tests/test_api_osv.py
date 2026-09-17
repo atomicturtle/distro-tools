@@ -408,6 +408,49 @@ class TestOSVCVEFiltering(unittest.TestCase):
         )
         self.assertEqual(rpmmods, ["nodejs:16", "nodejs:18"])
 
+    def test_same_nevra_same_stream_different_module_build_not_collapsed(self):
+        mirror = MockSupportedProductsRhMirror(8)
+        nevra = "nodejs-nodemon-0:3.0.1-1.module+el8.9.0+19741+03a9aaff.noarch"
+        packages = [
+            MockPackage(
+                nevra=nevra,
+                product_name="Rocky Linux 8 x86_64",
+                repo_name="AppStream",
+                supported_products_rh_mirror=mirror,
+                module_name="nodejs",
+                module_stream="16",
+                module_version="8090020240312140000",
+                module_context="aaaa",
+            ),
+            MockPackage(
+                nevra=nevra,
+                product_name="Rocky Linux 8 x86_64",
+                repo_name="AppStream",
+                supported_products_rh_mirror=mirror,
+                module_name="nodejs",
+                module_stream="16",
+                module_version="8090020240312140001",
+                module_context="bbbb",
+            ),
+        ]
+        result = to_osv_advisory(
+            "https://errata.rockylinux.org",
+            MockAdvisory(packages=packages, cves=[MockCVE()]),
+        )
+        self.assertEqual(len(result.affected), 2)
+        rpmmods = sorted(
+            a.package.purl.split("rpmmod=", 1)[1]
+            for a in result.affected
+            if a.package.purl and "rpmmod=" in a.package.purl
+        )
+        self.assertEqual(
+            rpmmods,
+            [
+                "nodejs:16:8090020240312140000:aaaa",
+                "nodejs:16:8090020240312140001:bbbb",
+            ],
+        )
+
 
 class TestOSVAttribution(unittest.TestCase):
     """Test Red Hat source attribution and CC BY 4.0 license in OSV output"""

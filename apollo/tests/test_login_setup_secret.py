@@ -20,6 +20,19 @@ class TestSetupSecretEnv(unittest.TestCase):
             source,
             re.compile(r"os\.environ\.get\(SETUP_SECRET_ENV\)"),
         )
+        self.assertIn("ensure_csrf_token", source)
+
+    def test_setup_form_includes_csrf_field(self):
+        path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "server",
+            "templates",
+            "login.jinja",
+        )
+        source = open(path, encoding="utf-8").read()
+        self.assertIn('name="csrf_token"', source)
+        self.assertIn("{{ csrf_token }}", source)
 
 
 if __name__ == "__main__":

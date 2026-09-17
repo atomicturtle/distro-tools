@@ -23,6 +23,7 @@ from apollo.db import (
     Code
 )
 from apollo.server.utils import templates
+from common.logger import Logger
 from apollo.server.validation import (
     FieldValidator,
     FormValidator,
@@ -317,14 +318,15 @@ async def import_configurations(
     try:
         content = await file.read()
         import_data = json.loads(content.decode('utf-8'))
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError:
         return RedirectResponse(
-            f"/admin/supported-products?error={quote(f'Invalid JSON file: {str(e)}')}",
+            f"/admin/supported-products?error={quote('Invalid JSON file format')}",
             status_code=302
         )
     except Exception as e:
+        Logger().error(f"Config import failed: {e}")
         return RedirectResponse(
-            f"/admin/supported-products?error={quote(f'Error reading file: {str(e)}')}",
+            f"/admin/supported-products?error={quote('Configuration import failed. Check server logs for details.')}",
             status_code=302
         )
 
@@ -351,8 +353,9 @@ async def import_configurations(
             status_code=302
         )
     except Exception as e:
+        Logger().error(f"Config import failed: {e}")
         return RedirectResponse(
-            f"/admin/supported-products?error={quote(f'Import failed: {str(e)}')}",
+            f"/admin/supported-products?error={quote('Configuration import failed. Check server logs for details.')}",
             status_code=302
         )
 

@@ -128,6 +128,8 @@ def _osv_affected_key(pkg) -> tuple:
         pkg.nevra,
         getattr(pkg, "module_name", None) or "",
         getattr(pkg, "module_stream", None) or "",
+        getattr(pkg, "module_version", None) or "",
+        getattr(pkg, "module_context", None) or "",
     )
 
 

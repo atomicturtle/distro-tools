@@ -108,7 +108,8 @@ async def get_advisory(request: Request, advisory_name: str):
             "error.jinja", {
                 "request": request,
                 "message": "Requested advisory not found",
-            }
+            },
+            status_code=404,
         )
 
     package_map = {}

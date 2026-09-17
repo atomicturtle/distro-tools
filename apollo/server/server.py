@@ -1,5 +1,4 @@
 import os
-import secrets
 
 from tortoise import Tortoise
 
@@ -9,6 +8,7 @@ from fastapi import FastAPI, Request, Depends
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi_pagination import add_pagination
 
 from apollo.server.routes.advisories import router as advisories_router
@@ -32,7 +32,12 @@ from apollo.server.routes.api_keys import router as api_keys_router
 from apollo.server.routes.api_cve_status import router as api_cve_status_router
 from apollo.server.routes.api_vex import router as api_vex_router
 from apollo.server.routes.api_nvd import router as api_nvd_router
-from apollo.server.settings import SECRET_KEY, SettingsMiddleware, get_setting
+from apollo.server.settings import (
+    SECRET_KEY,
+    SettingsMiddleware,
+    get_setting,
+    load_session_secret,
+)
 from apollo.server.utils import admin_user_scheme, user_scheme, templates
 from apollo.server.csrf import CSRFMiddleware
 from apollo.server.redirects import safe_relative_redirect
@@ -67,6 +72,19 @@ app.mount(
 )
 
 app.add_middleware(SettingsMiddleware)
+
+# Session/CSRF/proxy must be registered before the ASGI app starts. add_middleware
+# is LIFO, so the last call is outermost: ProxyHeaders -> Session -> CSRF -> Settings.
+_SESSION_SECRET = load_session_secret()
+app.add_middleware(CSRFMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_SESSION_SECRET,
+    max_age=60 * 60 * 24 * 7,  # 1 week
+    same_site="lax",
+    https_only=_IS_PRODUCTION,
+)
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 app.include_router(advisories_router)
 app.include_router(statistics_router, prefix="/statistics")
@@ -192,22 +210,9 @@ async def render_template_exception_handler(
 async def startup():
     global temporal_client
 
-    # Generate secret-key if it does not exist in the database
-    secret_key = await get_setting(SECRET_KEY)
-    if not secret_key:
-        # Generate random secret key
-        secret_key = secrets.token_hex(32)
-        await Settings.create(name=SECRET_KEY, value=secret_key)
-
-    # Middleware is LIFO: Session must wrap CSRF so session exists for token checks.
-    app.add_middleware(CSRFMiddleware)
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key=secret_key,
-        max_age=60 * 60 * 24 * 7,  # 1 week
-        same_site="lax",
-        https_only=True,
-    )
+    # Keep Settings.secret-key populated for operators; signing uses _SESSION_SECRET.
+    if not await get_setting(SECRET_KEY):
+        await Settings.create(name=SECRET_KEY, value=_SESSION_SECRET)
 
     # Initialize Temporal client for workflow management
     temporal = Temporal(True)

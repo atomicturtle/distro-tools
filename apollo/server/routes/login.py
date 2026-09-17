@@ -7,6 +7,7 @@ import secrets
 from apollo.server.utils import templates
 from apollo.server.roles import ADMIN
 from apollo.server.utils import pwd_context
+from apollo.server.csrf import ensure_csrf_token
 from apollo.server.settings import OIDC_PROVIDER_NAME, OIDC_PROVIDER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET
 from apollo.db import User, Settings
 
@@ -25,6 +26,7 @@ async def login_page(request: Request):
 
     ctx = {
         "request": request,
+        "csrf_token": ensure_csrf_token(request),
         "should_show_setup": should_show_setup,
         "setup_secret_configured": bool(os.environ.get(SETUP_SECRET_ENV)),
     }

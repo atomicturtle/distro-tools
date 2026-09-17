@@ -159,6 +159,41 @@ py_test(
 )
 
 py_test(
-    name = "test_login_setup_secret",
-    srcs = ["test_login_setup_secret.py"],
+    name = "test_csrf",
+    srcs = ["test_csrf.py"],
+    deps = [
+        "//apollo/server:server_lib",
+    ],
+)
+
+py_test(
+    name = "test_session_secret",
+    srcs = ["test_session_secret.py"],
+    deps = [
+        "//apollo/server:server_lib",
+    ],
+)
+
+py_test(
+    name = "test_repomd_yaml",
+    srcs = ["test_repomd_yaml.py"],
+    deps = [
+        "//apollo/rpmworker:rpmworker_lib",
+    ],
+)
+
+py_test(
+    name = "test_logout",
+    srcs = ["test_logout.py"],
+    deps = [
+        "//apollo/server:server_lib",
+    ],
+)
+
+py_test(
+    name = "test_repomd_xml",
+    srcs = ["test_repomd_xml.py"],
+    deps = [
+        "//apollo/rpmworker:rpmworker_lib",
+    ],
 )

@@ -8,6 +8,7 @@ external dependencies (no database, no FastAPI).
 import unittest
 import sys
 import os
+import socket
 from typing import Dict, Any, List
 
 # Add the project root to the Python path
@@ -193,6 +194,34 @@ class TestFieldValidator(unittest.TestCase):
                 with self.assertRaises(ValidationError) as context:
                     FieldValidator.validate_url(invalid_url, required=True)
                 self.assertEqual(context.exception.error_type, expected_error_type)
+
+    def test_validate_url_rejects_hostname_resolving_to_private_ip(self):
+        import ipaddress
+        from unittest.mock import patch
+
+        private = ipaddress.ip_address("169.254.169.254")
+        with patch(
+            "common.ssrf.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0)),
+            ],
+        ):
+            with self.assertRaises(ValidationError) as context:
+                FieldValidator.validate_url("https://metadata.internal/repo")
+            self.assertEqual(context.exception.error_type, ValidationErrorType.INVALID_URL)
+
+        with patch(
+            "common.ssrf.socket.getaddrinfo",
+            return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            ],
+        ):
+            self.assertTrue(
+                FieldValidator.validate_url("https://example.com/repo").startswith(
+                    "https://"
+                )
+            )
+        self.assertEqual(private.is_link_local, True)
 
     def test_validate_architecture_success(self):
         """Test successful architecture validation."""

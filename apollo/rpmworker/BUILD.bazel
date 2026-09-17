@@ -16,6 +16,7 @@ py_library(
         "//apollo/db:db_lib",
         "//common:common_lib",
         "@pypi_aiohttp//:pkg",
+        "@pypi_defusedxml//:pkg",
         "@pypi_pyyaml//:pkg",
         "@pypi_temporalio//:pkg",
         "@pypi_tortoise_orm//:pkg",

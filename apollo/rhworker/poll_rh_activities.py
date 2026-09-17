@@ -2,7 +2,7 @@ from datetime import datetime
 import re
 import bz2
 from typing import Optional
-from xml.etree import ElementTree as ET
+import defusedxml.ElementTree as ET
 import csv
 import io
 from datetime import datetime, timedelta, timezone

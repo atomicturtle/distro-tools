@@ -65,7 +65,9 @@ async def list_cve_statuses(
         query = query.filter(supported_product_id=sp.id)
 
     total = await query.count()
-    rows = await query.offset(offset).limit(limit).order_by("cve")
+    rows = await query.offset(offset).limit(limit).order_by(
+        "cve", "supported_product_id", "id"
+    )
     return CveStatusListResponse(
         total=total,
         items=[

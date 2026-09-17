@@ -6,6 +6,7 @@ under_investigation. Fixed statuses reference the RLSA id when known.
 Excluded from updateinfo by design (updateinfo stays package-fix only).
 """
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -14,6 +15,8 @@ from pydantic import BaseModel, Field
 from apollo.db import CveProductStatus, SupportedProduct
 
 router = APIRouter(tags=["vex"])
+
+_NOT_AFFECTED_JUSTIFICATION = "component_not_present"
 
 
 class VexProductStatus(BaseModel):
@@ -32,7 +35,8 @@ class VexDocument(BaseModel):
         default="https://openvex.dev/ns/v0.2.0",
         alias="@context",
     )
-    id: str
+    id: str = Field(alias="@id")
+    timestamp: str
     author: str = "Rocky Linux Apollo"
     version: int = 1
     statements: list[dict]
@@ -61,26 +65,35 @@ async def vex_for_cve(cve_id: str):
     statements = []
     for row in rows:
         product = row.supported_product
+        product_id = f"apollo:product:{row.supported_product_id}"
         vex_status = _STATUS_TO_VEX.get(row.status, row.status)
         statement = {
             "vulnerability": {"name": cve},
             "products": [
                 {
-                    "id": f"apollo:product:{row.supported_product_id}",
+                    "@id": product_id,
+                    "id": product_id,
                     "name": product.name if product else str(row.supported_product_id),
                 }
             ],
             "status": vex_status,
         }
-        if row.reason:
+        if row.status == "not_shipped":
+            statement["justification"] = _NOT_AFFECTED_JUSTIFICATION
+            statement["impact_statement"] = (
+                row.reason or "The component is not shipped in this product."
+            )
+        elif row.reason:
             statement["status_notes"] = row.reason
         if row.status == "fixed" and row.advisory_id:
             statement["action_statement"] = f"Fixed in advisory_id={row.advisory_id}"
         # Explicitly no package URLs for not_shipped / under_investigation.
         statements.append(statement)
 
+    issued = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     return VexDocument(
         id=f"apollo:vex:{cve}",
+        timestamp=issued,
         statements=statements,
     )
 
@@ -99,7 +112,7 @@ async def vex_for_product(
     query = CveProductStatus.filter(supported_product_id=product.id)
     if status:
         query = query.filter(status=status)
-    rows = await query.limit(limit).order_by("cve")
+    rows = await query.limit(limit).order_by("cve", "id")
 
     return {
         "product": product.name,

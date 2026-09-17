@@ -95,19 +95,24 @@ async def list_nvd_cves(
     if len(raw_ids) > 100:
         raise HTTPException(status_code=400, detail="at most 100 CVE IDs")
 
-    wanted = list(dict.fromkeys(raw_ids))  # preserve order, dedupe
-    upper_map = {c.upper(): c for c in wanted}
-    rows = await NvdCve.filter(cve_id__in=list(upper_map.keys()))
+    wanted = []
+    original_by_upper = {}
+    for raw in raw_ids:
+        key = raw.upper()
+        if key not in original_by_upper:
+            original_by_upper[key] = raw
+            wanted.append(key)
+    rows = await NvdCve.filter(cve_id__in=wanted)
     by_id = {row.cve_id.upper(): row for row in rows}
 
     items: list[NvdCveResponse] = []
     missing: list[str] = []
     for cve_id in wanted:
-        row = by_id.get(cve_id.upper())
+        row = by_id.get(cve_id)
         if row:
             items.append(nvd_cve_to_response(row))
         else:
-            missing.append(cve_id)
+            missing.append(original_by_upper[cve_id])
     return NvdCveListResponse(items=items, missing=missing)
 
 

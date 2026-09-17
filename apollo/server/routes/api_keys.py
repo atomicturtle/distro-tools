@@ -104,7 +104,9 @@ async def create_api_key(
                 revoked_at=api_key.revoked_at
             )
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger = Logger()
         logger.error(f"Error creating API key: {str(e)}")

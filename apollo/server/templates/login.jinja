@@ -43,6 +43,7 @@
     <div class="apollo-login-form">
       {% if should_show_setup %}
       <form id="signup_form" action="/login/setup" method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <bx-form-item>
           <bx-input required name="name" form_id="signup_form">
             <span slot="label-text">Name</span>

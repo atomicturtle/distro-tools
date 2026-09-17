@@ -165,7 +165,10 @@
       </bx-header-nav-item>
       {% if request.session.get("user.name") %}
       <bx-header-nav-item href="/profile/">{{ request.session.get("user.name") }}</bx-header-nav-item>
-      <bx-header-nav-item href="/logout/">Logout</bx-header-nav-item>
+      <form action="/logout/" method="POST" style="display:inline;margin:0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <bx-btn type="submit" kind="ghost" size="sm">Logout</bx-btn>
+      </form>
       {% else %}
       <bx-header-nav-item href="/login/">Login</bx-header-nav-item>
       {% endif %}
