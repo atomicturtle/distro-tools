@@ -3,9 +3,13 @@
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)/errata-research.conf"
 DST=/etc/httpd/conf.d/errata-research.conf
+CSAF_ROOT="${APOLLO_CSAF_ROOT:-/home/sshinn/apollo/csaf}"
 [[ -f "$SRC" ]] || { echo "missing $SRC"; exit 1; }
 sudo cp -a "$DST" "${DST}.bak.$(date +%Y%m%d%H%M%S)"
 sudo cp "$SRC" "$DST"
+# Home is typically 700; Apache needs traverse (x) on /home/sshinn and read on the tree.
+sudo chmod 711 /home/sshinn
+sudo chmod -R a+rX "$CSAF_ROOT"
 sudo apachectl configtest
 sudo systemctl reload httpd
 echo "Applied $DST and reloaded httpd"

@@ -9,7 +9,8 @@ Research publish target for the RH-shaped CSAF directory:
 | Public URL | `https://apollo.research.atomicorp.com/csaf/v2/` |
 | Env | `APOLLO_CSAF_TREE`, `APOLLO_CSAF_BASE_URL` |
 | Browse | Apache `Alias /csaf` + `Options +Indexes` (see `apollo/deploy/db1/errata-research.conf`) |
-| Refresh | `apollo-csaf-publish.timer` daily 07:00 UTC (`install-user-units.sh`) |
+| Apache perms | `/home/sshinn` must be `711`; tree world-readable (`apply-csaf-apache.sh` + publish script) |
+| Refresh | `apollo-csaf-publish.timer` daily ~07:00 UTC (`install-user-units.sh`) |
 
 ## One-time setup
 

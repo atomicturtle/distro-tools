@@ -66,9 +66,11 @@ def build_track_archive(track_dir: Path, track_name: str) -> Optional[Path]:
     if archive_path.exists():
         archive_path.unlink()
 
+    # EL8 tar 1.30 has no --zstd; -I zstd works with the zstd CLI.
     cmd = [
         "tar",
-        "--zstd",
+        "-I",
+        "zstd",
         "-cf",
         str(archive_path),
         "-C",

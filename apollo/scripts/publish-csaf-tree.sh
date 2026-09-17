@@ -62,6 +62,10 @@ fi
 mkdir -p "$OUT"
 # Atomic-ish swap: rsync into place so readers never see an empty tree.
 rsync -a --delete "$STAGE"/ "$OUT"/
+# Apache Indexes needs world-readable files and traverse on parents
+# (/home/sshinn should stay 711; apply-csaf-apache.sh sets that once).
+chmod -R a+rX "$OUT" 2>/dev/null || true
+chmod a+x "$(dirname "$OUT")" "$(dirname "$(dirname "$OUT")")" 2>/dev/null || true
 
 ADV_COUNT="$(find "$OUT/advisories" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
 VEX_COUNT="$(find "$OUT/vex" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
