@@ -20,10 +20,22 @@ def _csrf_context(request: Request) -> dict:
     return {"csrf_token": ensure_csrf_token(request)}
 
 
-templates = Jinja2Templates(
-    directory="apollo/server/templates",
-    context_processors=[_csrf_context],
-)
+templates = Jinja2Templates(directory="apollo/server/templates")
+
+# Starlette on db1 is older and rejects context_processors=; inject CSRF manually.
+_original_template_response = templates.TemplateResponse
+
+
+def _template_response_with_csrf(name, context=None, *args, **kwargs):
+    ctx = dict(context or {})
+    request = ctx.get("request")
+    if request is not None:
+        ctx.update(_csrf_context(request))
+    return _original_template_response(name, ctx, *args, **kwargs)
+
+
+templates.TemplateResponse = _template_response_with_csrf
+
 
 # Add global function to templates for environment information
 def get_environment_info():
