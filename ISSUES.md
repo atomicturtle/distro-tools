@@ -10,21 +10,21 @@ IDs are stable (1–5 and **15** finished, dropped; **13** and **14** parked). *
 
 ## Features
 
-6. **Feature** — CSAF Security Advisory files. Apollo consumes RH CSAF; it does not emit SA documents. Scanners that only subscribe to CSAF get nothing from this host. Rocky-from-CIQ `CRLSA` is a transform of Apollo and lags. Needs a generator plus a way to subscribe (get-by-id API vs provider tree). Not RelEng `updateinfo` (**#10**), not VEX (**#7**).
+6. **Done** — CSAF Security Advisory files. `GET /api/v3/csaf/advisories/{RLSA}`, index, `provider-metadata.json`, `changes.csv`. Generator in `apollo/exports/csaf_sa.py` (CEM rocky_clone port, Rocky publisher / RLSA ids). Tree writer: `apollo/publishing_tools/csaf_tree.py`.
 
-7. **Feature** — CSAF VEX files. Separate generator from **#6**. CIQ VEX is LTS / FIPS / Bridge only. Docs that point Rocky-from-CIQ scanners at VEX 404.
+7. **Done** — CSAF VEX files. `GET /api/v3/csaf/vex/{CVE}` from `CveProductStatus`; OpenVEX hardened at `GET /api/v3/vex/cves/{CVE}` with `pkg:rpm/rockylinux` PURLs for fixed statuses.
 
-8. **Feature** — Current OVAL for Rocky 8/9/10. `dl.rockylinux.org/pub/oval/` is a 2024 snapshot; no Rocky 10 file; generator archived. OpenSCAP users miss 2025/2026 RLSAs. Not an Apollo endpoint today.
+8. **Done** — OVAL for Rocky 8/9/10. `GET /api/v3/oval/rocky-linux/{major}` (`org.rockylinux.rlsa-{N}.xml`, optional gzip).
 
-9. **Feature** — Bulk dump. Paginated JSON only. No Alma-style `errata.full.json` or CSAF index.
+9. **Done** — Bulk dump. `GET /api/v3/bulk/rocky-linux/{major}/errata.json` (full non-paginated array).
 
-10. **Feature** — RelEng in-repo `updateinfo.xml` from this catalog. `dnf` / Trivy / Foreman do not see Apollo’s XML until RelEng publishes. Repo XML lags (same-day nginx RLSA missing from Rocky 10 AppStream at probe).
+10. **Done (Apollo side)** — RelEng updateinfo contract. ETag / Last-Modified / `X-Apollo-Updateinfo-Contract: v1` on `/api/v3/updateinfo`. Staging handoff via `apollo_tree --staging-dir`. See [docs/RELENG_UPDATEINFO.md](docs/RELENG_UPDATEINFO.md). CDN publish remains RelEng-owned.
 
 11. **Feature** — In-document CPE on CRLSA OS products. Sidecar `cpe-product-keys.json` only. CIQSA already embeds CPE. CIQ transform, not Apollo.
 
 12. **Feature** — CPE 2.3 string shape. Host `system-release-cpe` is truncated (`…:9.8`); some CSAF/STIG docs use full wildcards. String equality fails. RelEng / platform, not Apollo.
 
-16. **Feature** — Same-day catalog vs production. Daily timer is **06:00 UTC**. Production RLSAs published later that day 404 on db1 until a manual `start-catalog.sh`. Incremental CSAF+Hydra+rematch does catch up; it is not continuous. Do not use `sync-full.sh`.
+16. **Mitigated** — Catalog cadence. `apollo-catalog.timer` runs every **6 hours** (`OnCalendar=*-*-* 00,06,12,18:00:00 UTC`). Residual gap is same-window lag (up to ~6h), not once-daily. Continuous/event-driven ingest is still optional. Do not use `sync-full.sh`.
 
 ## Parked
 

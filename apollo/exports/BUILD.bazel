@@ -1,0 +1,26 @@
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+
+py_library(
+    name = "exports_lib",
+    srcs = [
+        "__init__.py",
+        "attribution.py",
+        "bulk.py",
+        "cpe.py",
+        "csaf_sa.py",
+        "csaf_vex.py",
+        "cwe_names.py",
+        "openvex.py",
+        "oval.py",
+        "provider.py",
+        "purl.py",
+    ],
+    data = [
+        "CEM_BASELINE",
+    ],
+    imports = ["../.."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//apollo/rpm_helpers:rpm_helpers_lib",
+    ],
+)

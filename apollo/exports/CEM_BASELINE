@@ -1,0 +1,14 @@
+CEM port baseline for Apollo CSAF/OpenVEX generators.
+
+Source repo: ciq/ciq-errata-management
+Commit: bc2940508be5a9a1ecc369360647cf85cb374065
+  ("Fail closed on fixed VEX without NEVRAs.")
+
+Modules synced/adapted into apollo/exports/:
+  - purl.py (namespace rockylinux)
+  - cwe_names.py
+  - cpe.py (Rocky CPE helpers; not CIQ repo-anchored)
+  - Patterns from generators/rocky_clone.py, vex.py, openvex.py
+  - Metadata patterns from publication/services/metadata_generator.py
+
+Re-sync this SHA (or newer tip) when re-porting generator fixes.

@@ -1,0 +1,16 @@
+[Unit]
+Description=Apollo catalog ingest+rematch + NVD/Koji enrichment (db1)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=21600
+WorkingDirectory=/home/sshinn/apollo/distro-tools
+EnvironmentFile=/home/sshinn/apollo/.env
+Environment=FOREGROUND=1
+Environment=SKIP_RPMWORKER_RESTART=1
+ExecStart=/home/sshinn/apollo/deploy/db1/start-catalog.sh
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=Apollo CSAF tree publish (db1 research)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=21600
+WorkingDirectory=/home/sshinn/apollo/distro-tools
+EnvironmentFile=/home/sshinn/apollo/.env
+Environment=ENV=production
+Environment=DB_HOST=127.0.0.1
+Environment=DB_PORT=5432
+Environment=DB_USER=apollo
+Environment=DB_SSLMODE=disable
+Environment=APOLLO_CSAF_TREE=/home/sshinn/apollo/csaf/v2
+Environment=APOLLO_CSAF_BASE_URL=https://apollo.research.atomicorp.com/csaf/v2
+ExecStart=/home/sshinn/apollo/distro-tools/apollo/scripts/publish-csaf-tree.sh
+
+[Install]
+WantedBy=default.target

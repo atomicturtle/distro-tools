@@ -1,0 +1,11 @@
+[Unit]
+Description=Apollo CSAF tree publish daily (db1 research)
+
+[Timer]
+# After the 06:00 UTC catalog window; keep lag small for research mirrors.
+OnCalendar=*-*-* 07:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -355,6 +355,7 @@ async def run_apollo_tree(
     major_version: int = None,
     minor_version: int = None,
     api_base: str = None,
+    staging_dir: str = None,
 ):
     if manual:
         raise Exception("Manual mode not implemented yet")
@@ -381,7 +382,7 @@ async def run_apollo_tree(
                     continue
 
                 gzipped = await gzip_updateinfo(updateinfo)
-                await write_updateinfo_to_file(
+                written = await write_updateinfo_to_file(
                     repo["found_path"],
                     gzipped,
                 )
@@ -389,6 +390,31 @@ async def run_apollo_tree(
                     repo["found_path"],
                     gzipped,
                 )
+                if staging_dir:
+                    await mirror_to_staging(
+                        repo["found_path"],
+                        written,
+                        staging_dir,
+                        path,
+                    )
+
+
+async def mirror_to_staging(
+    repomd_xml_path: str,
+    updateinfo_path: str,
+    staging_dir: str,
+    source_root: str,
+):
+    """Copy updateinfo + repomd into a RelEng handoff tree."""
+    import shutil
+
+    rel = os.path.relpath(os.path.dirname(repomd_xml_path), source_root)
+    dest_dir = os.path.join(staging_dir, rel)
+    os.makedirs(dest_dir, exist_ok=True)
+    for src in (updateinfo_path, repomd_xml_path):
+        if src and os.path.exists(src):
+            shutil.copy2(src, dest_dir)
+            logger.info("Staged %s -> %s", src, dest_dir)
 
 
 if __name__ == "__main__":
@@ -465,6 +491,13 @@ if __name__ == "__main__":
         "--api-base",
         help="API base URL (default: https://apollo.build.resf.org/api/v3/updateinfo)",
     )
+    parser.add_argument(
+        "--staging-dir",
+        help=(
+            "Optional RelEng handoff directory; copies generated updateinfo "
+            "and repomd.xml into a parallel tree"
+        ),
+    )
 
     p_args = parser.parse_args()
     if p_args.auto_scan and p_args.manual:
@@ -491,5 +524,6 @@ if __name__ == "__main__":
             p_args.major_version,
             p_args.minor_version,
             p_args.api_base,
+            p_args.staging_dir,
         )
     )

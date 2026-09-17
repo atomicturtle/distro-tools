@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 from typing import Optional
 from xml.etree import ElementTree as ET
 
@@ -27,6 +28,23 @@ PRODUCT_SLUG_MAP = {
     "rocky-linux": "Rocky Linux",
     "rocky-linux-sig-cloud": "Rocky Linux SIG Cloud",
 }
+
+
+def _updateinfo_response(xml_str: str) -> Response:
+    """Stable RelEng contract: XML body plus ETag / Last-Modified."""
+    digest = hashlib.sha256(xml_str.encode("utf-8")).hexdigest()
+    return Response(
+        content=xml_str,
+        media_type="application/xml",
+        headers={
+            "ETag": f'"{digest}"',
+            "Last-Modified": datetime.datetime.utcnow().strftime(
+                "%a, %d %b %Y %H:%M:%S GMT"
+            ),
+            "Cache-Control": "public, max-age=300",
+            "X-Apollo-Updateinfo-Contract": "v1",
+        },
+    )
 
 
 def resolve_product_slug(slug: str) -> Optional[str]:
@@ -403,7 +421,7 @@ async def get_updateinfo(
         product_name_for_packages=product_name,
     )
 
-    return Response(content=xml_str, media_type="application/xml")
+    return _updateinfo_response(xml_str)
 
 
 @router.get("/{product}/{major_version}/{repo}/updateinfo.xml")
@@ -510,4 +528,4 @@ async def get_updateinfo_v2(
         product_name_for_packages=f"{product_name} {major_version} {arch}",
     )
 
-    return Response(content=xml_str, media_type="application/xml")
+    return _updateinfo_response(xml_str)

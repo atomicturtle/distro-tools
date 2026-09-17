@@ -1,0 +1,10 @@
+[Unit]
+Description=Apollo catalog+enrichment every 6 hours (db1 QA)
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

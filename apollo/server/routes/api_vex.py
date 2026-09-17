@@ -1,49 +1,20 @@
-"""
-OpenVEX-style export for Rocky CVE product statuses.
+"""OpenVEX-style export for Rocky CVE product statuses.
 
-Only emits status documents — never package fix lists for not_shipped /
-under_investigation. Fixed statuses reference the RLSA id when known.
-Excluded from updateinfo by design (updateinfo stays package-fix only).
+Emits full OpenVEX statements with pkg:rpm/rockylinux PURLs for fixed
+statuses. not_shipped / under_investigation stay product-scoped and are
+never package lists. Excluded from updateinfo by design.
 """
 
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
 
-from apollo.db import CveProductStatus, SupportedProduct
+from apollo.db import AdvisoryPackage, CveProductStatus, SupportedProduct
+from apollo.exports.csaf_vex import entries_from_cve_statuses
+from apollo.exports.openvex import build_openvex
 
 router = APIRouter(tags=["vex"])
-
-_NOT_AFFECTED_JUSTIFICATION = "component_not_present"
-
-
-class VexProductStatus(BaseModel):
-    product_id: str
-    product_name: str
-    status: str
-    reason: Optional[str] = None
-    advisory_id: Optional[int] = None
-    red_hat_advisory_id: Optional[int] = None
-
-
-class VexDocument(BaseModel):
-    """Minimal OpenVEX-inspired document for one CVE."""
-
-    context: str = Field(
-        default="https://openvex.dev/ns/v0.2.0",
-        alias="@context",
-    )
-    id: str = Field(alias="@id")
-    timestamp: str
-    author: str = "Rocky Linux Apollo"
-    version: int = 1
-    statements: list[dict]
-
-    class Config:
-        allow_population_by_field_name = True
-
 
 _STATUS_TO_VEX = {
     "fixed": "fixed",
@@ -52,50 +23,35 @@ _STATUS_TO_VEX = {
 }
 
 
-@router.get("/cves/{cve_id}", response_model=VexDocument)
+@router.get("/cves/{cve_id}")
 async def vex_for_cve(cve_id: str):
     cve = cve_id.upper()
     if not cve.startswith("CVE-"):
-        raise HTTPException(status_code=400, detail="cve_id must look like CVE-YYYY-NNNN")
+        raise HTTPException(
+            status_code=400, detail="cve_id must look like CVE-YYYY-NNNN"
+        )
 
-    rows = await CveProductStatus.filter(cve=cve).prefetch_related("supported_product")
+    rows = await CveProductStatus.filter(cve=cve).prefetch_related(
+        "supported_product"
+    )
     if not rows:
         raise HTTPException(status_code=404, detail=f"No VEX status for {cve}")
 
-    statements = []
-    for row in rows:
-        product = row.supported_product
-        product_id = f"apollo:product:{row.supported_product_id}"
-        vex_status = _STATUS_TO_VEX.get(row.status, row.status)
-        statement = {
-            "vulnerability": {"name": cve},
-            "products": [
-                {
-                    "@id": product_id,
-                    "id": product_id,
-                    "name": product.name if product else str(row.supported_product_id),
-                }
-            ],
-            "status": vex_status,
-        }
-        if row.status == "not_shipped":
-            statement["justification"] = _NOT_AFFECTED_JUSTIFICATION
-            statement["impact_statement"] = (
-                row.reason or "The component is not shipped in this product."
-            )
-        elif row.reason:
-            statement["status_notes"] = row.reason
-        if row.status == "fixed" and row.advisory_id:
-            statement["action_statement"] = f"Fixed in advisory_id={row.advisory_id}"
-        # Explicitly no package URLs for not_shipped / under_investigation.
-        statements.append(statement)
+    advisory_ids = {
+        row.advisory_id
+        for row in rows
+        if row.status == "fixed" and row.advisory_id
+    }
+    packages_by_advisory_id = {}
+    if advisory_ids:
+        packages = await AdvisoryPackage.filter(
+            advisory_id__in=list(advisory_ids)
+        )
+        for pkg in packages:
+            packages_by_advisory_id.setdefault(pkg.advisory_id, []).append(pkg)
 
-    issued = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    return VexDocument(
-        id=f"apollo:vex:{cve}",
-        timestamp=issued,
-        statements=statements,
-    )
+    entries = entries_from_cve_statuses(rows, packages_by_advisory_id)
+    return build_openvex(cve, entries)
 
 
 @router.get("/products/{product_name}")
@@ -107,7 +63,9 @@ async def vex_for_product(
     """List VEX statement summaries for a supported product."""
     product = await SupportedProduct.filter(name=product_name).first()
     if not product:
-        raise HTTPException(status_code=404, detail=f"Unknown product {product_name}")
+        raise HTTPException(
+            status_code=404, detail=f"Unknown product {product_name}"
+        )
 
     query = CveProductStatus.filter(supported_product_id=product.id)
     if status:
@@ -117,6 +75,9 @@ async def vex_for_product(
     return {
         "product": product.name,
         "total": await query.count(),
+        "generated_at": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat(),
         "statements": [
             {
                 "cve": row.cve,

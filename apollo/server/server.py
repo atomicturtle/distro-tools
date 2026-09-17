@@ -33,6 +33,9 @@ from apollo.server.routes.api_keys import router as api_keys_router
 from apollo.server.routes.api_cve_status import router as api_cve_status_router
 from apollo.server.routes.api_vex import router as api_vex_router
 from apollo.server.routes.api_nvd import router as api_nvd_router
+from apollo.server.routes.api_bulk import router as api_bulk_router
+from apollo.server.routes.api_csaf import router as api_csaf_router
+from apollo.server.routes.api_oval import router as api_oval_router
 from apollo.server.settings import (
     SECRET_KEY,
     SettingsMiddleware,
@@ -71,6 +74,16 @@ app.mount(
     StaticFilesSym(directory="apollo/server/assets"),
     name="assets",
 )
+
+# Optional RH-shaped CSAF provider tree (db1: APOLLO_CSAF_TREE=~/apollo/csaf/v2).
+_CSAF_TREE = os.environ.get("APOLLO_CSAF_TREE", "").strip()
+if _CSAF_TREE:
+    os.makedirs(_CSAF_TREE, exist_ok=True)
+    app.mount(
+        "/csaf/v2",
+        StaticFilesSym(directory=_CSAF_TREE),
+        name="csaf_v2",
+    )
 
 app.add_middleware(SettingsMiddleware)
 
@@ -130,6 +143,9 @@ app.include_router(api_osv_router, prefix="/api/v3/osv")
 app.include_router(api_cve_status_router, prefix="/api/v3/cves")
 app.include_router(api_vex_router, prefix="/api/v3/vex")
 app.include_router(api_nvd_router, prefix="/api/v3/nvd")
+app.include_router(api_bulk_router, prefix="/api/v3/bulk")
+app.include_router(api_csaf_router, prefix="/api/v3/csaf")
+app.include_router(api_oval_router, prefix="/api/v3/oval")
 app.include_router(api_workflows_router, prefix="/api/v3/workflows")
 app.include_router(api_keys_router, prefix="/api/v3/keys")
 

@@ -205,3 +205,30 @@ py_test(
         "//apollo/rpmworker:rpmworker_lib",
     ],
 )
+
+py_test(
+    name = "test_exports_bulk",
+    srcs = ["test_exports_bulk.py"],
+    deps = [
+        "//apollo/exports:exports_lib",
+        "//apollo/rpm_helpers:rpm_helpers_lib",
+    ],
+)
+
+py_test(
+    name = "test_exports_generators",
+    srcs = ["test_exports_generators.py"],
+    deps = [
+        "//apollo/exports:exports_lib",
+        "//apollo/rpm_helpers:rpm_helpers_lib",
+    ],
+)
+
+py_test(
+    name = "test_csaf_tree",
+    srcs = ["publishing_tools/test_csaf_tree.py"],
+    deps = [
+        "//apollo/exports:exports_lib",
+        "//apollo/publishing_tools:publishing_tools_lib",
+    ],
+)
